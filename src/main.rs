@@ -10,7 +10,7 @@ use std::{
 use chrono::{serde::ts_milliseconds_option, DateTime, Utc};
 use copypasta::ClipboardProvider;
 use eframe::{
-    egui::{self, vec2, Button, Grid, Layout, ProgressBar, Slider, Ui},
+    egui::{self, vec2, Button, DragValue, Grid, Layout, ProgressBar, Slider, Ui},
     epi,
 };
 use num_format::{Locale, ToFormattedString};
@@ -18,7 +18,7 @@ use progress_streams::ProgressReader;
 use regex::Regex;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 use serde::{Deserialize, Serialize};
-use triple_accel::levenshtein;
+use triple_accel::levenshtein::{self, EditCosts};
 
 struct Username {
     id: String,
@@ -45,15 +45,16 @@ struct Match {
 // }
 
 #[derive(Deserialize)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct ApiUser {
     id: String,
-    #[serde(with = "ts_milliseconds_option")]
+    #[serde(default, with = "ts_milliseconds_option")]
     created_at: Option<DateTime<Utc>>,
-    #[serde(with = "ts_milliseconds_option")]
+    #[serde(default, with = "ts_milliseconds_option")]
     seen_at: Option<DateTime<Utc>>,
     #[serde(default)]
     disabled: bool,
+    #[serde(default)]
     perfs: ApiPerfs,
 }
 
@@ -127,7 +128,6 @@ impl LoadingState {
 #[derive(Clone, Default)]
 struct LoadedState {
     pattern: String,
-    edit_costs: String,
     users: Arc<Vec<Username>>,
     results: Arc<Mutex<Vec<Match>>>,
     processing: Arc<AtomicBool>,
@@ -146,7 +146,6 @@ impl State {
     fn loaded(users: Vec<Username>) -> Self {
         Self::Loaded(LoadedState {
             pattern: String::new(),
-            edit_costs: "3,1,1,1".to_string(),
             users: Arc::new(users),
             results: Default::default(),
             processing: Default::default(),
@@ -173,7 +172,7 @@ enum SearchMode {
 enum Searcher {
     Plain(String),
     Regex(Regex),
-    Levenshtein(String, levenshtein::EditCosts, u32),
+    Levenshtein(String, LevenshteinSettings),
 }
 
 impl Searcher {
@@ -183,13 +182,13 @@ impl Searcher {
             Plain(pattern) => username.contains(pattern).then(|| 0),
             Regex(regex) => regex.is_match(username).then(|| 0),
             Levenshtein(pattern, ..) if username.len() < pattern.len() => None,
-            Levenshtein(pattern, edit_costs, k) => levenshtein::levenshtein_search_simd_with_opts(
+            Levenshtein(pattern, lev) => levenshtein::levenshtein_search_simd_with_opts(
                 pattern.as_bytes(),
                 username.as_bytes(),
-                *k,
+                lev.max_k,
                 // ((pattern.len() >> 1) as u32) + ((pattern.len() as u32) & 1),
                 triple_accel::SearchType::Best,
-                *edit_costs,
+                lev.edit_costs(),
                 // levenshtein::RDAMERAU_COSTS,
                 false,
             )
@@ -205,13 +204,39 @@ impl Default for SearchMode {
     }
 }
 
+#[derive(Deserialize, Serialize, Clone, Copy)]
+struct LevenshteinSettings {
+    max_k: u32,
+    mismatch_cost: u8,
+    gap_cost: u8,
+    swap_cost: u8,
+}
+
+impl LevenshteinSettings {
+    fn edit_costs(&self) -> EditCosts {
+        levenshtein::EditCosts::new(self.mismatch_cost, self.gap_cost, 0, Some(self.swap_cost))
+    }
+}
+
+impl Default for LevenshteinSettings {
+    fn default() -> Self {
+        Self {
+            max_k: 3,
+            mismatch_cost: 1,
+            gap_cost: 1,
+            swap_cost: 2,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(default)]
 pub struct App {
     #[serde(default = "default_page_size")]
     page_size: usize,
     search_mode: SearchMode,
-    saved_names: Vec<String>,
+    levenshtein_settings: LevenshteinSettings,
+    saved_names: HashSet<String>,
     #[serde(skip)]
     selected: HashSet<usize>,
     #[serde(skip)]
@@ -243,10 +268,12 @@ impl App {
                             let reader = BufReader::new(reader);
                             for line in reader.lines() {
                                 let name = line.map_err(|e| e.to_string())?;
-                                data.push(Username {
-                                    id: name.to_ascii_lowercase(),
-                                    name,
-                                });
+                                if !name.is_empty() {
+                                    data.push(Username {
+                                        id: name.to_ascii_lowercase(),
+                                        name,
+                                    });
+                                }
                             }
                             Ok(())
                         };
@@ -270,7 +297,7 @@ impl App {
         }
     }
 
-    fn do_search(s: LoadedState, mode: SearchMode) {
+    fn do_search(s: LoadedState, mode: SearchMode, lev: LevenshteinSettings) {
         if s.pattern.len() < 3 {
             return;
         }
@@ -297,16 +324,7 @@ impl App {
                     }
                 }
             }
-            SearchMode::Levenshtein => {
-                let mut iter = s.edit_costs.split(',').flat_map(|x| x.parse::<u8>().ok());
-                let (k, edit_cost) = match (iter.next(), iter.next(), iter.next(), iter.next()) {
-                    (Some(k), Some(edit), Some(gap), transpose) => {
-                        (k, levenshtein::EditCosts::new(edit, gap, 0, transpose))
-                    }
-                    _ => (3, levenshtein::RDAMERAU_COSTS),
-                };
-                Searcher::Levenshtein(s.pattern, edit_cost, k as u32)
-            }
+            SearchMode::Levenshtein => Searcher::Levenshtein(s.pattern, lev),
             SearchMode::RegEx => match Regex::new(&s.pattern) {
                 Ok(regex) => Searcher::Regex(regex),
                 Err(error) => {
@@ -333,16 +351,19 @@ impl App {
                         k,
                     });
                 }
-                if i % 1_000_000 == 0 && mode == SearchMode::Levenshtein {
-                    curr.sort_unstable_by_key(|m| m.k);
-                }
                 if i % 1_000 == 0 {
-                    s.results.lock().unwrap().append(&mut curr);
+                    let mut results = s.results.lock().unwrap();
+                    results.append(&mut curr);
+                    if i % 1_000_000 == 0 && mode == SearchMode::Levenshtein {
+                        results.sort_unstable_by_key(|m| m.k);
+                    }
                     s.progress
                         .store(((i as f32) / (s.users.len() as f32)).to_bits(), SeqCst);
                 }
             }
-            s.results.lock().unwrap().append(&mut curr);
+            let mut results = s.results.lock().unwrap();
+            results.append(&mut curr);
+            results.sort_unstable_by_key(|m| m.k);
             s.processing.store(false, SeqCst);
         });
     }
@@ -357,6 +378,7 @@ impl Default for App {
         Self {
             page_size: default_page_size(),
             saved_names: Default::default(),
+            levenshtein_settings: Default::default(),
             search_mode: Default::default(),
             selected: Default::default(),
             state: Default::default(),
@@ -425,7 +447,7 @@ impl epi::App for App {
             Loaded(s) => {
                 // let mut dump = false;
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add(Slider::new(&mut self.page_size, 10..=100).text("Results per page"));
 
                     ui.add_space(20.0);
@@ -451,7 +473,37 @@ impl epi::App for App {
                     if let SearchMode::Levenshtein = self.search_mode {
                         ui.add_space(20.0);
                         ui.label("Max distance:");
-                        ui.text_edit_singleline(&mut s.edit_costs);
+                        ui.add(
+                            DragValue::new(&mut self.levenshtein_settings.max_k)
+                                .speed(0.2)
+                                .clamp_range(1..=10),
+                        );
+                        ui.add_space(20.0);
+                        ui.label("Cost:");
+                        ui.add(
+                            DragValue::new(&mut self.levenshtein_settings.mismatch_cost)
+                                .speed(0.2)
+                                .clamp_range(1..=10),
+                        )
+                        .on_hover_text("Mismatch cost (cost of an incorrect letter)");
+                        ui.add(
+                            DragValue::new(&mut self.levenshtein_settings.gap_cost)
+                                .speed(0.2)
+                                .clamp_range(1..=10),
+                        )
+                        .on_hover_text("Gap cost (cost of a missing/additional letter)");
+                        let max_cost = self
+                            .levenshtein_settings
+                            .mismatch_cost
+                            .min(self.levenshtein_settings.gap_cost)
+                            * 2
+                            - 1;
+                        ui.add(
+                            DragValue::new(&mut self.levenshtein_settings.swap_cost)
+                                .speed(0.2)
+                                .clamp_range(1..=max_cost),
+                        )
+                        .on_hover_text("Swap cost (cost of swapping two adjacent letters)");
                     }
 
                     // ui.with_layout(Layout::right_to_left(), |ui| {
@@ -479,7 +531,7 @@ impl epi::App for App {
                 let mut do_update = false;
 
                 ui.add_enabled_ui(!s.processing.load(SeqCst), |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Username: ");
                         do_search = ui.text_edit_singleline(&mut s.pattern).lost_focus();
                         do_search |= ui.button("Search").clicked();
@@ -488,6 +540,7 @@ impl epi::App for App {
                             results.len(),
                             s.users.len().to_formatted_string(&Locale::en)
                         ));
+                        ui.add_space(20.0);
                         if self.selected.len() == results.len() {
                             if ui.button("Deselect all").clicked() {
                                 self.selected.clear();
@@ -495,7 +548,7 @@ impl epi::App for App {
                         } else if ui.button("Select all").clicked() {
                             self.selected.extend(0..results.len());
                         }
-                        if ui.button("Copy").clicked() {
+                        if ui.button("Copy selected").clicked() {
                             let mut names = Vec::with_capacity(self.selected.len());
                             for i in &self.selected {
                                 names.push(format!("/{}", results[*i].name));
@@ -504,26 +557,50 @@ impl epi::App for App {
                         }
                         ui.add_space(20.0);
                         if self.saved_names.is_empty() {
-                            ui.label("Empty list");
+                            ui.label("No names remembered");
                         } else {
-                            ui.label(format!("List: {} names", self.saved_names.len()));
+                            ui.label(format!("Remembering {} names", self.saved_names.len()));
                         }
-                        if ui.button("Add to list").clicked() {
+                        if ui.button("Remember selected").clicked() {
                             for i in &self.selected {
                                 let u = &results[*i];
-                                self.saved_names.push(u.name.clone());
+                                self.saved_names.insert(u.name.clone());
                             }
                         }
-                        if ui.button("Copy list").clicked() {
-                            copy_to_clipboard(format!("/{}", self.saved_names.join("\n/")));
+                        if ui.button("Copy").clicked() {
+                            copy_to_clipboard(
+                                self.saved_names
+                                    .iter()
+                                    .map(|n| format!("/{}", n))
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            );
                         }
-                        if ui.button("Clear list").clicked() {
+                        if ui.button("Show").clicked() {
+                            *results = self
+                                .saved_names
+                                .iter()
+                                .map(|n| Match {
+                                    id: n.to_ascii_lowercase(),
+                                    name: n.clone(),
+                                    enabled: true,
+                                    created_at: None,
+                                    seen_at: None,
+                                    games: 0,
+                                    k: 0,
+                                })
+                                .collect();
+                        }
+                        if ui.button("Clear").clicked() {
                             self.saved_names.clear();
                         }
                         ui.add_space(20.0);
                         let hint = "Fetch additional information about found users from Lichess";
                         do_update = ui
-                            .add_enabled(!s.processing.load(SeqCst), Button::new("Fetch from API"))
+                            .add_enabled(
+                                !s.processing.load(SeqCst),
+                                Button::new("Fetch additional info"),
+                            )
                             .on_hover_text(hint)
                             .clicked();
                     })
@@ -533,7 +610,7 @@ impl epi::App for App {
                     s.page = 0;
                     self.selected.clear();
                     results.clear();
-                    App::do_search(s.clone(), self.search_mode);
+                    App::do_search(s.clone(), self.search_mode, self.levenshtein_settings);
                 }
 
                 if do_update {
@@ -554,28 +631,28 @@ impl epi::App for App {
                         for group in names.chunks(300) {
                             match ureq::post("https://lichess.org/api/users")
                                 .send_string(&group.join(","))
-                            {
-                                Ok(response) => {
-                                    match response.into_json::<Vec<ApiUser>>() {
-                                        Ok(users) => users.into_iter().for_each(|u| {
-                                            api_users.insert(u.id.clone(), u);
-                                        }),
-                                        Err(error) => {
-                                            show_error(&error.to_string());
-                                            continue;
-                                        }
-                                    };
+                                .map_err(|e| e.to_string())
+                                .and_then(|r| {
+                                    r.into_json::<Vec<ApiUser>>().map_err(|e| e.to_string())
+                                }) {
+                                Ok(users) => users.into_iter().for_each(|u| {
+                                    api_users.insert(u.id.clone(), u);
+                                }),
+                                Err(msg) => {
+                                    show_error(&msg);
+                                    break;
                                 }
-                                Err(error) => show_error(&error.to_string()),
                             }
                         }
-                        let mut results = results.lock().unwrap();
-                        for user in results[..max].iter_mut() {
-                            if let Some(u) = api_users.remove(&user.id) {
-                                user.created_at = u.created_at;
-                                user.seen_at = u.seen_at;
-                                user.games = u.perfs.sum_games();
-                                user.enabled = !u.disabled;
+                        if !api_users.is_empty() {
+                            let mut results = results.lock().unwrap();
+                            for user in results[..max].iter_mut() {
+                                if let Some(u) = api_users.remove(&user.id) {
+                                    user.created_at = u.created_at;
+                                    user.seen_at = u.seen_at;
+                                    user.games = u.perfs.sum_games();
+                                    user.enabled = !u.disabled;
+                                }
                             }
                         }
                         processing.store(false, SeqCst);
@@ -604,6 +681,7 @@ impl epi::App for App {
                             ui.strong("Username");
                             ui.strong("Created");
                             ui.strong("Online");
+                            ui.strong("Games");
                             ui.end_row();
 
                             let now = Utc::now();
@@ -636,19 +714,23 @@ impl epi::App for App {
                                         }
                                     }
                                 });
-                                if user.enabled {
-                                    ui.hyperlink_to(
-                                        &user.name,
-                                        &format!("https://lichess.org/@/{}", user.id),
-                                    );
-                                } else {
-                                    ui.hyperlink_to(
-                                        format!("{} 🔒", user.name),
-                                        &format!("https://lichess.org/@/{}", user.id),
-                                    );
-                                }
+                                ui.hyperlink_to(
+                                    format!(
+                                        "{} {}{}",
+                                        user.name,
+                                        if user.enabled { "" } else { "🔒" },
+                                        if self.saved_names.contains(&user.name) {
+                                            "⭐"
+                                        } else {
+                                            ""
+                                        }
+                                    ),
+                                    &format!("https://lichess.org/@/{}", user.id),
+                                );
                                 ui.label(user.created_at.map(timeago).unwrap_or_default());
                                 ui.label(user.seen_at.map(timeago).unwrap_or_default());
+                                ui.label(user.games);
+                                ui.label(user.k);
                                 ui.end_row();
                             }
                         });
