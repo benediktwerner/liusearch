@@ -229,9 +229,8 @@ pub struct App {
     password: Option<String>,
     search_mode: SearchMode,
     levenshtein_settings: LevenshteinSettings,
-    saved_names: HashSet<String>,
-    #[serde(skip)]
-    selected: HashSet<usize>,
+    saved_borderline: HashSet<String>,
+    saved_obvious: HashSet<String>,
     #[serde(skip)]
     state: State,
 }
@@ -450,10 +449,10 @@ impl Default for App {
         Self {
             page_size: default_page_size(),
             password: None,
-            saved_names: Default::default(),
             levenshtein_settings: Default::default(),
             search_mode: Default::default(),
-            selected: Default::default(),
+            saved_borderline: Default::default(),
+            saved_obvious: Default::default(),
             state: Default::default(),
         }
     }
@@ -602,60 +601,42 @@ impl epi::App for App {
                             s.users.len().to_formatted_string(&Locale::en)
                         ));
                         ui.add_space(20.0);
-                        if self.selected.len() == results.len() {
-                            if ui.button("Deselect all").clicked() {
-                                self.selected.clear();
+                        for (name, coll) in [
+                            ("obvious", &mut self.saved_obvious),
+                            ("borderline", &mut self.saved_borderline),
+                        ] {
+                            if coll.is_empty() {
+                                ui.label(format!("No {} names", name));
+                            } else {
+                                ui.label(format!("{} {} names", coll.len(), name));
                             }
-                        } else if ui.button("Select all").clicked() {
-                            self.selected.extend(0..results.len());
-                        }
-                        if ui.button("Copy selected").clicked() {
-                            let mut names = Vec::with_capacity(self.selected.len());
-                            for i in &self.selected {
-                                names.push(format!("/{}", results[*i].name));
+                            if ui.button("Copy").clicked() {
+                                copy_to_clipboard(
+                                    coll.iter()
+                                        .map(|n| format!("/{}", n))
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                );
                             }
-                            copy_to_clipboard(names.join("\n"));
-                        }
-                        ui.add_space(20.0);
-                        if self.saved_names.is_empty() {
-                            ui.label("No names remembered");
-                        } else {
-                            ui.label(format!("Remembering {} names", self.saved_names.len()));
-                        }
-                        if ui.button("Remember selected").clicked() {
-                            for i in &self.selected {
-                                let u = &results[*i];
-                                self.saved_names.insert(u.name.clone());
-                            }
-                        }
-                        if ui.button("Copy").clicked() {
-                            copy_to_clipboard(
-                                self.saved_names
+                            if ui.button("Show").clicked() {
+                                *results = coll
                                     .iter()
-                                    .map(|n| format!("/{}", n))
-                                    .collect::<Vec<_>>()
-                                    .join("\n"),
-                            );
+                                    .map(|n| Match {
+                                        id: n.to_ascii_lowercase(),
+                                        name: n.clone(),
+                                        enabled: true,
+                                        created_at: None,
+                                        seen_at: None,
+                                        games: 0,
+                                        k: 0,
+                                    })
+                                    .collect();
+                            }
+                            if ui.button("Clear").clicked() {
+                                coll.clear();
+                            }
+                            ui.add_space(20.0);
                         }
-                        if ui.button("Show").clicked() {
-                            *results = self
-                                .saved_names
-                                .iter()
-                                .map(|n| Match {
-                                    id: n.to_ascii_lowercase(),
-                                    name: n.clone(),
-                                    enabled: true,
-                                    created_at: None,
-                                    seen_at: None,
-                                    games: 0,
-                                    k: 0,
-                                })
-                                .collect();
-                        }
-                        if ui.button("Clear").clicked() {
-                            self.saved_names.clear();
-                        }
-                        ui.add_space(20.0);
                         let hint = "Fetch additional information about found users from Lichess";
                         do_update = ui
                             .add_enabled(
@@ -669,13 +650,11 @@ impl epi::App for App {
 
                 if do_search {
                     s.page = 0;
-                    self.selected.clear();
                     results.clear();
                     App::do_search(s.clone(), self.search_mode, self.levenshtein_settings);
                 }
 
                 if do_update {
-                    self.selected.clear();
                     s.processing.store(true, SeqCst);
                     let max = results.len().min(5 * 300);
                     let progress_step = results.len() / ((max + 299) / 300);
@@ -762,32 +741,42 @@ impl epi::App for App {
                                 }
                             };
 
-                            for (i, user) in results[(s.page * self.page_size)
+                            for user in &results[(s.page * self.page_size)
                                 ..((s.page + 1) * self.page_size).min(results.len())]
-                                .iter()
-                                .enumerate()
                             {
-                                let i = i + s.page * self.page_size;
+                                let obvious = self.saved_obvious.contains(&user.name);
+                                let borderline = self.saved_borderline.contains(&user.name);
+                                let (mut clicked_obv, mut clicked_border) = (false, false);
                                 ui.with_layout(Layout::right_to_left(), |ui| {
-                                    let mut checked = self.selected.contains(&i);
-                                    if ui.checkbox(&mut checked, "").changed() {
-                                        if checked {
-                                            self.selected.insert(i);
+                                    clicked_obv = ui
+                                        .button(if obvious { "–Obvious" } else { "+Obvious" })
+                                        .clicked();
+                                    clicked_border = ui
+                                        .button(if borderline {
+                                            "–Borderline"
                                         } else {
-                                            self.selected.remove(&i);
-                                        }
-                                    }
+                                            "+Borderline"
+                                        })
+                                        .clicked();
                                 });
+
+                                if clicked_border || (clicked_obv && obvious) {
+                                    self.saved_obvious.remove(&user.name);
+                                }
+                                if clicked_obv || (clicked_border && borderline) {
+                                    self.saved_borderline.remove(&user.name);
+                                }
+                                if clicked_obv && !obvious {
+                                    self.saved_obvious.insert(user.name.clone());
+                                } else if clicked_border && !borderline {
+                                    self.saved_borderline.insert(user.name.clone());
+                                }
                                 ui.hyperlink_to(
                                     format!(
                                         "{} {}{}",
                                         user.name,
                                         if user.enabled { "" } else { "🔒" },
-                                        if self.saved_names.contains(&user.name) {
-                                            "⭐"
-                                        } else {
-                                            ""
-                                        }
+                                        if obvious || borderline { "⭐" } else { "" }
                                     ),
                                     &format!("https://lichess.org/@/{}", user.id),
                                 );
