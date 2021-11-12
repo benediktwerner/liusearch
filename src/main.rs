@@ -1,12 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::SeqCst},
         Arc, Mutex,
     },
 };
 
+use anyhow::{bail, ensure};
 use chrono::{serde::ts_milliseconds_option, DateTime, Utc};
 use copypasta::ClipboardProvider;
 use eframe::{
@@ -14,7 +16,9 @@ use eframe::{
     epi,
 };
 use num_format::{Locale, ToFormattedString};
+use pgp::Deserializable;
 use progress_streams::ProgressReader;
+use rayon::prelude::*;
 use regex::Regex;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 use serde::{Deserialize, Serialize};
@@ -34,15 +38,6 @@ struct Match {
     games: u32,
     k: u32,
 }
-
-// #[derive(Serialize)]
-// struct CompactUser<'a> {
-//     #[serde(rename = "_id")]
-//     id: &'a str,
-//     enabled: bool,
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     username: Option<&'a str>,
-// }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,18 +101,14 @@ fn main() {
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 struct LoadingState {
-    loaded: Arc<AtomicUsize>,
-    to_load: usize,
     progress: Arc<AtomicU32>,
     done: Arc<AtomicBool>,
     result: Arc<Mutex<Option<Result<Vec<Username>, String>>>>,
 }
 
 impl LoadingState {
-    fn new(to_load: usize) -> Self {
+    fn new() -> Self {
         Self {
-            loaded: Arc::new(AtomicUsize::new(0)),
-            to_load,
             progress: Arc::new(AtomicU32::new(0.0_f32 as u32)),
             done: Arc::new(AtomicBool::new(false)),
             result: Arc::new(Mutex::new(None)),
@@ -132,13 +123,13 @@ struct LoadedState {
     results: Arc<Mutex<Vec<Match>>>,
     processing: Arc<AtomicBool>,
     page: usize,
-    progress: Arc<AtomicU32>,
+    progress: Arc<AtomicUsize>,
 }
 
 enum State {
     PickFile,
+    AskPassword(PathBuf, String),
     Loading(LoadingState),
-    // Dumping(Arc<AtomicBool>, LoadedState),
     Loaded(LoadedState),
 }
 
@@ -150,7 +141,7 @@ impl State {
             results: Default::default(),
             processing: Default::default(),
             page: 0,
-            progress: Arc::new(AtomicU32::new(1)),
+            progress: Arc::new(AtomicUsize::new(1)),
         })
     }
 }
@@ -169,6 +160,7 @@ enum SearchMode {
     RegEx,
 }
 
+#[derive(Clone)]
 enum Searcher {
     Plain(String),
     Regex(Regex),
@@ -224,7 +216,7 @@ impl Default for LevenshteinSettings {
             max_k: 3,
             mismatch_cost: 1,
             gap_cost: 1,
-            swap_cost: 2,
+            swap_cost: 1,
         }
     }
 }
@@ -234,6 +226,7 @@ impl Default for LevenshteinSettings {
 pub struct App {
     #[serde(default = "default_page_size")]
     page_size: usize,
+    password: Option<String>,
     search_mode: SearchMode,
     levenshtein_settings: LevenshteinSettings,
     saved_names: HashSet<String>,
@@ -246,55 +239,135 @@ pub struct App {
 impl App {
     fn render_pick_file(&mut self, ui: &mut Ui) {
         if ui.button("Load Data").clicked() {
-            if let Some(paths) = rfd::FileDialog::new()
-                .add_filter("Text", &["txt"])
-                .pick_files()
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Usernames", &["txt", "txt.gz", "txt.gpg", "txt.gz.gpg"])
+                .pick_file()
             {
-                let s = LoadingState::new(paths.len());
-                self.state = State::Loading(s.clone());
-                std::thread::spawn(move || {
-                    let mut data = Vec::new();
-
-                    for path in paths {
-                        let mut load_file = |path| -> Result<(), String> {
-                            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-                            let size = file.metadata().map_err(|e| e.to_string())?.len() as f32;
-                            let mut read = 0;
-                            let reader = ProgressReader::new(file, |progress: usize| {
-                                read += progress;
-                                let progress = (read as f32) / size;
-                                s.progress.store(progress.to_bits(), SeqCst);
-                            });
-                            let reader = BufReader::new(reader);
-                            for line in reader.lines() {
-                                let name = line.map_err(|e| e.to_string())?;
-                                if !name.is_empty() {
-                                    data.push(Username {
-                                        id: name.to_ascii_lowercase(),
-                                        name,
-                                    });
-                                }
-                            }
-                            Ok(())
-                        };
-
-                        match load_file(path) {
-                            Ok(()) => {
-                                s.loaded.fetch_add(1, SeqCst);
-                            }
-                            Err(error) => {
-                                *s.result.lock().unwrap() = Some(Err(error));
-                                s.done.store(true, SeqCst);
-                                return;
-                            }
-                        }
+                let ext = path.extension().unwrap_or_default();
+                if ext == "gpg" {
+                    if let Some(pwd) = self.password.clone() {
+                        self.load_encrypted(path, pwd);
+                    } else {
+                        self.state = State::AskPassword(path, String::new());
                     }
+                } else {
+                    self.load_plain(path);
+                }
+            }
+        }
+    }
 
-                    *s.result.lock().unwrap() = Some(Ok(data));
-                    s.done.store(true, SeqCst);
+    fn do_read(reader: impl BufRead) -> Result<Vec<Username>, std::io::Error> {
+        let mut result = Vec::new();
+        for line in reader.lines() {
+            let name = line?;
+            if !name.is_empty() {
+                result.push(Username {
+                    id: name.to_ascii_lowercase(),
+                    name,
                 });
             }
         }
+        Ok(result)
+    }
+
+    fn load_plain(&mut self, path: PathBuf) {
+        let s = LoadingState::new();
+        self.state = State::Loading(s.clone());
+        std::thread::spawn(move || {
+            let load_file = |path: PathBuf| -> Result<Vec<Username>, std::io::Error> {
+                let compressed = path.extension().filter(|e| *e == "gz").is_some();
+                let file = std::fs::File::open(path)?;
+                let size = file.metadata()?.len() as f32;
+                let mut read = 0;
+                let reader = ProgressReader::new(file, |progress: usize| {
+                    read += progress;
+                    let progress = (read as f32) / size;
+                    s.progress.store(progress.to_bits(), SeqCst);
+                });
+                let reader = BufReader::new(reader);
+                if compressed {
+                    let reader = flate2::bufread::GzDecoder::new(reader);
+                    let reader = BufReader::new(reader);
+                    Self::do_read(reader)
+                } else {
+                    Self::do_read(reader)
+                }
+            };
+
+            *s.result.lock().unwrap() = Some(load_file(path).map_err(|e| e.to_string()));
+            s.done.store(true, SeqCst);
+        });
+    }
+
+    fn load_encrypted(&mut self, path: PathBuf, password: String) {
+        let s = LoadingState::new();
+        self.state = State::Loading(s.clone());
+        std::thread::spawn(move || {
+            let load_file = |path: PathBuf| -> anyhow::Result<Vec<Username>> {
+                let compressed = path.as_os_str().to_str().unwrap().contains(".gz.");
+                let file = std::fs::File::open(path)?;
+                let size = file.metadata()?.len() as f32;
+                let mut read = 0;
+                let reader = ProgressReader::new(file, |progress: usize| {
+                    read += progress;
+                    let divider = if compressed { 4.0 } else { 2.0 };
+                    let progress = (read as f32) / size / divider;
+                    s.progress.store(progress.to_bits(), SeqCst);
+                });
+                let reader = BufReader::new(reader);
+                let msg = pgp::Message::from_bytes(reader)?;
+                let msgs = msg
+                    .decrypt_with_password(|| password)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                ensure!(
+                    msgs.len() == 1,
+                    "Expected one PGP message, got {}",
+                    msgs.len()
+                );
+                let msg = msgs.into_iter().next().unwrap().decompress()?;
+
+                if let Some(literal) = msg.get_literal() {
+                    let mut data = literal.data();
+                    let mut v = Vec::new();
+                    if compressed {
+                        let mut read = 0;
+                        let reader = ProgressReader::new(data, |progress: usize| {
+                            read += progress;
+                            let progress = (read as f32) / data.len() as f32 / 4.0 + 0.25;
+                            s.progress.store(progress.to_bits(), SeqCst);
+                        });
+                        let reader = BufReader::new(reader);
+                        flate2::bufread::GzDecoder::new(reader).read_to_end(&mut v)?;
+                        data = &v;
+                    }
+                    let mut read = 0;
+                    let mut result = Vec::new();
+                    let size = data.len() as f32;
+                    for (i, line) in data.lines().enumerate() {
+                        let line = line?;
+                        let name = line.to_string();
+                        if !name.is_empty() {
+                            result.push(Username {
+                                id: name.to_ascii_lowercase(),
+                                name,
+                            });
+                        }
+                        read += line.len();
+                        if i % 100_000 == 0 {
+                            let progress = (read as f32) / size / 2.0 + 0.5;
+                            s.progress.store(progress.to_bits(), SeqCst);
+                        }
+                    }
+                    Ok(result)
+                } else {
+                    bail!("Failed to decrypt message")
+                }
+            };
+
+            *s.result.lock().unwrap() = Some(load_file(path).map_err(|e| e.to_string()));
+            s.done.store(true, SeqCst);
+        });
     }
 
     fn do_search(s: LoadedState, mode: SearchMode, lev: LevenshteinSettings) {
@@ -338,32 +411,31 @@ impl App {
         s.progress.store(0, SeqCst);
 
         std::thread::spawn(move || {
-            let mut curr: Vec<Match> = Vec::new();
-            for (i, user) in s.users.iter().enumerate() {
-                if let Some(k) = searcher.matches(&user.id) {
-                    curr.push(Match {
-                        id: user.id.clone(),
-                        name: user.name.clone(),
-                        enabled: true,
-                        created_at: None,
-                        seen_at: None,
-                        games: 0,
-                        k,
-                    });
-                }
-                if i % 1_000 == 0 {
-                    let mut results = s.results.lock().unwrap();
-                    results.append(&mut curr);
-                    if i % 1_000_000 == 0 && mode == SearchMode::Levenshtein {
-                        results.sort_unstable_by_key(|m| m.k);
+            s.users
+                .par_chunks(100_000)
+                .for_each_with(searcher, |searcher, users| {
+                    let mut curr = Vec::new();
+                    for (i, user) in users.iter().enumerate() {
+                        if let Some(k) = searcher.matches(&user.id) {
+                            curr.push(Match {
+                                id: user.id.clone(),
+                                name: user.name.clone(),
+                                enabled: true,
+                                created_at: None,
+                                seen_at: None,
+                                games: 0,
+                                k,
+                            })
+                        }
+                        if i & 0xfff == 0 {
+                            s.progress.fetch_add(0xfff, SeqCst);
+                        }
                     }
-                    s.progress
-                        .store(((i as f32) / (s.users.len() as f32)).to_bits(), SeqCst);
-                }
+                    s.results.lock().unwrap().append(&mut curr);
+                });
+            if mode == SearchMode::Levenshtein {
+                s.results.lock().unwrap().sort_unstable_by_key(|m| m.k);
             }
-            let mut results = s.results.lock().unwrap();
-            results.append(&mut curr);
-            results.sort_unstable_by_key(|m| m.k);
             s.processing.store(false, SeqCst);
         });
     }
@@ -377,6 +449,7 @@ impl Default for App {
     fn default() -> Self {
         Self {
             page_size: default_page_size(),
+            password: None,
             saved_names: Default::default(),
             levenshtein_settings: Default::default(),
             search_mode: Default::default(),
@@ -413,19 +486,24 @@ impl epi::App for App {
             PickFile => {
                 ui.centered_and_justified(|ui| self.render_pick_file(ui));
             }
-            // Dumping(done, old) => {
-            //     ui.vertical_centered_justified(|ui| {
-            //         ui.label("Dumping. This may take a while.");
-            //     });
-            //     if done.load(SeqCst) {
-            //         self.state = Loaded(std::mem::take(old));
-            //     }
-            // }
+            AskPassword(path, pwd) => {
+                let mut decrypt = false;
+                ui.vertical_centered_justified(|ui| {
+                    ui.label("Password:");
+                    ui.text_edit_singleline(pwd);
+                    decrypt = ui.button("Decrypt").clicked();
+                });
+                if decrypt {
+                    self.password = Some(pwd.clone());
+                    let path = path.clone();
+                    let pwd = pwd.clone();
+                    self.load_encrypted(path, pwd);
+                }
+            }
             Loading(s) => {
                 ctx.request_repaint();
                 let s = s.clone();
                 ui.vertical_centered_justified(|ui| {
-                    ui.label(format!("Loading {}/{}", s.loaded.load(SeqCst), s.to_load));
                     ui.add(
                         ProgressBar::new(f32::from_bits(s.progress.load(SeqCst))).show_percentage(),
                     );
@@ -437,6 +515,7 @@ impl epi::App for App {
                             }
                             Some(Err(msg)) => {
                                 show_error(&msg);
+                                self.password = None;
                                 self.state = PickFile;
                             }
                             None => (),
@@ -445,8 +524,6 @@ impl epi::App for App {
                 });
             }
             Loaded(s) => {
-                // let mut dump = false;
-
                 ui.horizontal_wrapped(|ui| {
                     ui.add(Slider::new(&mut self.page_size, 10..=100).text("Results per page"));
 
@@ -505,23 +582,7 @@ impl epi::App for App {
                         )
                         .on_hover_text("Swap cost (cost of swapping two adjacent letters)");
                     }
-
-                    // ui.with_layout(Layout::right_to_left(), |ui| {
-                    //     let hint = "Dump currently loaded usernames into a single file \
-                    //                         and remove createdAt/onlineAt information for improved \
-                    //                         loading performance and decreased disk usage";
-                    //     dump = ui.button("Dump compact").on_hover_text(hint).clicked();
-                    // });
                 });
-
-                // if dump {
-                //     let users = s.users.clone();
-                //     let old = std::mem::take(s);
-                //     let done = Arc::new(AtomicBool::new(false));
-                //     self.state = Dumping(done.clone(), old);
-                //     dump_compact(users, done);
-                //     return;
-                // }
 
                 ui.separator();
 
@@ -617,6 +678,7 @@ impl epi::App for App {
                     self.selected.clear();
                     s.processing.store(true, SeqCst);
                     let max = results.len().min(5 * 300);
+                    let progress_step = results.len() / ((max + 299) / 300);
                     let names = results[..max]
                         .iter()
                         .map(|u| &u.name)
@@ -626,9 +688,9 @@ impl epi::App for App {
                     let processing = s.processing.clone();
                     let results = s.results.clone();
                     std::thread::spawn(move || {
-                        progress.store(0.2_f32.to_bits(), SeqCst);
+                        progress.store(0, SeqCst);
                         let mut api_users = HashMap::new();
-                        for group in names.chunks(300) {
+                        for (i, group) in names.chunks(300).enumerate() {
                             match ureq::post("https://lichess.org/api/users")
                                 .send_string(&group.join(","))
                                 .map_err(|e| e.to_string())
@@ -643,6 +705,7 @@ impl epi::App for App {
                                     break;
                                 }
                             }
+                            progress.store((i + 1) * progress_step, SeqCst);
                         }
                         if !api_users.is_empty() {
                             let mut results = results.lock().unwrap();
@@ -664,7 +727,8 @@ impl epi::App for App {
                 if s.processing.load(SeqCst) {
                     ctx.request_repaint();
                     ui.add(
-                        ProgressBar::new(f32::from_bits(s.progress.load(SeqCst))).show_percentage(),
+                        ProgressBar::new(s.progress.load(SeqCst) as f32 / s.users.len() as f32)
+                            .show_percentage(),
                     );
                 } else {
                     ui.add(ProgressBar::new(1.0).text("Done"));
@@ -771,40 +835,6 @@ impl epi::App for App {
         });
     }
 }
-
-// fn dump_compact(users: Arc<Vec<User>>, done: Arc<AtomicBool>) {
-//     if let Some(path) = rfd::FileDialog::new()
-//         .set_file_name("compact.txt")
-//         .add_filter("Text", &["txt"])
-//         .save_file()
-//     {
-//         std::thread::spawn(move || {
-//             match (|| -> Result<(), String> {
-//                 let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-//                 let mut writer = BufWriter::new(file);
-//                 for user in users.iter() {
-//                     if user.enabled {
-//                         writer
-//                             .write_all(user.username.as_ref().unwrap_or(&user.id).as_bytes())
-//                             .map_err(|e| e.to_string())?;
-//                     }
-//                 }
-//                 Ok(())
-//             })() {
-//                 Ok(()) => {
-//                     MessageDialog::new()
-//                         .set_title("Success")
-//                         .set_buttons(MessageButtons::Ok)
-//                         .set_description("File saved")
-//                         .set_level(MessageLevel::Info)
-//                         .show();
-//                 }
-//                 Err(msg) => show_error(&msg),
-//             }
-//             done.store(true, SeqCst);
-//         });
-//     }
-// }
 
 fn copy_to_clipboard(s: String) {
     match copypasta::ClipboardContext::new() {
