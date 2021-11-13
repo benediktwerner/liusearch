@@ -12,7 +12,7 @@ use anyhow::{bail, ensure};
 use chrono::{serde::ts_milliseconds_option, DateTime, Utc};
 use copypasta::ClipboardProvider;
 use eframe::{
-    egui::{self, vec2, Button, DragValue, Grid, Layout, ProgressBar, Slider, Ui},
+    egui::{self, vec2, Button, DragValue, Grid, Layout, ProgressBar, Slider, TextEdit, Ui},
     epi,
 };
 use num_format::{Locale, ToFormattedString};
@@ -244,11 +244,8 @@ impl App {
             {
                 let ext = path.extension().unwrap_or_default();
                 if ext == "gpg" {
-                    if let Some(pwd) = self.password.clone() {
-                        self.load_encrypted(path, pwd);
-                    } else {
-                        self.state = State::AskPassword(path, String::new());
-                    }
+                    self.state =
+                        State::AskPassword(path, self.password.clone().unwrap_or_default());
                 } else {
                     self.load_plain(path);
                 }
@@ -489,7 +486,7 @@ impl epi::App for App {
                 let mut decrypt = false;
                 ui.vertical_centered_justified(|ui| {
                     ui.label("Password:");
-                    ui.text_edit_singleline(pwd);
+                    ui.add(TextEdit::singleline(pwd).password(true));
                     decrypt = ui.button("Decrypt").clicked();
                 });
                 if decrypt {
