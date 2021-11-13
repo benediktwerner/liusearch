@@ -1,6 +1,6 @@
 # Adapted from https://github.com/niklasf/liusearch/blob/master/.github/workflows/release.yml
 
-name: Build and release
+name: Build
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
           draft: true
           prerelease: false
   build:
-    name: Building for ${{ matrix.job.os-name }}
+    name: ${{ matrix.job.os-name }}
     runs-on: ${{ matrix.job.os }}
     needs: release
     strategy:
@@ -78,7 +78,6 @@ jobs:
           command: build
           args: --release --target ${{ matrix.job.target }} -vv
       - run: strip target/${{ matrix.job.target }}/release/liusearch${{ matrix.job.binary-extension }}
-      - run: sha256sum target/${{ matrix.job.target }}/release/liusearch${{ matrix.job.binary-extension }}
       - uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
