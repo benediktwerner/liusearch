@@ -26,6 +26,40 @@ pub struct Match {
     pub k: u32,
 }
 
+impl  Match {
+    pub fn new(user: &Username, k: u32) -> Self {
+        Self {
+            id: user.id.clone(),
+            name: user.name.clone(),
+            enabled: true,
+            created_at: None,
+            seen_at: None,
+            games: 0,
+            k,
+        }
+    }
+}
+
+impl From<&str> for Match {
+    fn from(name: &str) -> Self {
+        Self {
+            id: name.to_ascii_lowercase(),
+            name: name.to_string(),
+            enabled: true,
+            created_at: None,
+            seen_at: None,
+            games: 0,
+            k: 0,
+        }
+    }
+}
+
+impl From<&String> for Match {
+    fn from(name: &String) -> Self {
+        name.into()
+    }
+}
+
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub struct LoadingState {

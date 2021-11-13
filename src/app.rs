@@ -1,4 +1,10 @@
-use std::{collections::{HashMap, HashSet}, io::{BufRead, BufReader, Read}, path::PathBuf, sync::atomic::Ordering::SeqCst, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    io::{BufRead, BufReader, Read},
+    path::PathBuf,
+    sync::atomic::Ordering::SeqCst,
+    time::Duration,
+};
 
 use anyhow::{bail, ensure};
 use chrono::Utc;
@@ -238,15 +244,7 @@ impl App {
                     let mut curr = Vec::new();
                     for (i, user) in users.iter().enumerate() {
                         if let Some(k) = searcher.matches(&user.id) {
-                            curr.push(Match {
-                                id: user.id.clone(),
-                                name: user.name.clone(),
-                                enabled: true,
-                                created_at: None,
-                                seen_at: None,
-                                games: 0,
-                                k,
-                            })
+                            curr.push(Match::new(user, k));
                         }
                         if i & 0xfff == 0 {
                             s.progress.fetch_add(0xfff, SeqCst);
@@ -410,6 +408,7 @@ impl epi::App for App {
                 let mut results = results.lock().unwrap();
                 let mut do_search = false;
                 let mut do_update = false;
+                let mut do_load_clipboard = false;
                 let mut do_close = false;
 
                 // Second taskbar (search input + save lists)
@@ -442,24 +441,21 @@ impl epi::App for App {
                                 );
                             }
                             if ui.button("Show").clicked() {
-                                *results = coll
-                                    .iter()
-                                    .map(|n| Match {
-                                        id: n.to_ascii_lowercase(),
-                                        name: n.clone(),
-                                        enabled: true,
-                                        created_at: None,
-                                        seen_at: None,
-                                        games: 0,
-                                        k: 0,
-                                    })
-                                    .collect();
+                                *results = coll.iter().map(From::from).collect();
                             }
                             if ui.button("Clear").clicked() {
                                 coll.clear();
                             }
                             ui.add_space(20.0);
                         }
+                        do_load_clipboard = ui
+                            .button("Load from clipboard")
+                            .on_hover_text(
+                                "One username per line with leading slash or Lichess URL.\n\
+                                 Non-conforming lines and text after the username will be removed.",
+                            )
+                            .clicked();
+                        ui.add_space(20.0);
                         do_update = ui
                             .button("Fetch additional info")
                             .on_hover_text(
@@ -538,6 +534,21 @@ impl epi::App for App {
                     });
                 }
 
+                if do_load_clipboard {
+                    if let Some(clip) = get_clipboard() {
+                        let regex =
+                            Regex::new("^(?:https://lichess.org/@)?/([a-zA-Z0-9_-]{2,30})\\b")
+                                .unwrap();
+                        *results = clip
+                            .lines()
+                            .filter_map(|l| regex.captures(l))
+                            .filter_map(|c| c.get(1))
+                            .map(|m| m.as_str())
+                            .map(Match::from)
+                            .collect();
+                    }
+                }
+
                 if do_close
                     && results.len() < MAX_CLOSE
                     && MessageDialog::new()
@@ -554,7 +565,7 @@ impl epi::App for App {
                     let api_key = self.api_key.clone();
                     let names = results
                         .iter()
-                        .filter(|u|u.enabled)
+                        .filter(|u| u.enabled)
                         .map(|u| &u.name)
                         .cloned()
                         .collect::<Vec<String>>();
@@ -702,12 +713,28 @@ impl epi::App for App {
 }
 
 fn copy_to_clipboard(s: String) {
+    if let Some(Err(error)) = clipboard().map(|mut ctx| ctx.set_contents(s)) {
+        show_error(error);
+    }
+}
+
+fn get_clipboard() -> Option<String> {
+    clipboard().and_then(|mut ctx| match ctx.get_contents() {
+        Ok(s) => Some(s),
+        Err(error) => {
+            show_error(error);
+            None
+        }
+    })
+}
+
+fn clipboard() -> Option<copypasta::ClipboardContext> {
     match copypasta::ClipboardContext::new() {
-        Ok(mut ctx) => match ctx.set_contents(s) {
-            Ok(()) => (),
-            Err(error) => show_error(error),
-        },
-        Err(error) => show_error(error),
+        Ok(ctx) => Some(ctx),
+        Err(error) => {
+            show_error(error);
+            None
+        }
     }
 }
 
