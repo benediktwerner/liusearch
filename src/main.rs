@@ -374,11 +374,11 @@ impl App {
             return;
         }
 
+        let pattern = s.pattern.to_ascii_lowercase();
         let searcher = match mode {
-            SearchMode::Plain => Searcher::Plain(s.pattern),
+            SearchMode::Plain => Searcher::Plain(pattern),
             SearchMode::NumberReplacements => {
-                let pattern = s
-                    .pattern
+                let pattern = pattern
                     .replace("a", "[a4]")
                     .replace("e", "[e3]")
                     .replace("g", "[gq9]")
@@ -396,8 +396,8 @@ impl App {
                     }
                 }
             }
-            SearchMode::Levenshtein => Searcher::Levenshtein(s.pattern, lev),
-            SearchMode::RegEx => match Regex::new(&s.pattern) {
+            SearchMode::Levenshtein => Searcher::Levenshtein(pattern, lev),
+            SearchMode::RegEx => match Regex::new(&pattern) {
                 Ok(regex) => Searcher::Regex(regex),
                 Err(error) => {
                     show_error(&error.to_string());
