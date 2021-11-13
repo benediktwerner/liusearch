@@ -1,0 +1,89 @@
+# Adapted from https://github.com/niklasf/liusearch/blob/master/.github/workflows/release.yml
+
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: liusearch ${{ github.ref }}
+          draft: true
+          prerelease: false
+  build:
+    name: Building for ${{ matrix.job.os-name }}
+    runs-on: ${{ matrix.job.os }}
+    needs: release
+    strategy:
+      matrix:
+        job:
+          - os: ubuntu-18.04
+            os-name: linux-x86-64
+            target: x86_64-unknown-linux-gnu
+            toolchain: stable
+            binary-extension: ''
+            env:
+              CXX: g++
+          - os: windows-2016
+            os-name: windows-x86-64
+            target: x86_64-pc-windows-gnu
+            toolchain: stable-x86_64-pc-windows-gnu
+            binary-extension: '.exe'
+            env: {}
+          - os: macos-10.15
+            os-name: macos-x86-64
+            target: x86_64-apple-darwin
+            toolchain: stable
+            binary-extension: ''
+            env: {}
+          - os: macos-11.0
+            os-name: macos-aarch64
+            target: aarch64-apple-darwin
+            toolchain: stable
+            binary-extension: ''
+            env:
+              CXXFLAGS: -target arm64-apple-macos11
+    env: ${{ matrix.job.env }}
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ matrix.job.toolchain }}
+          target: ${{ matrix.job.target }}
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.job.target }} -vv
+      - run: strip target/${{ matrix.job.target }}/release/liusearch${{ matrix.job.binary-extension }}
+      - run: sha256sum target/${{ matrix.job.target }}/release/liusearch${{ matrix.job.binary-extension }}
+      - uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.release.outputs.upload_url }}
+          asset_path: target/${{ matrix.job.target }}/release/liusearch${{ matrix.job.binary-extension }}
+          asset_name: liusearch-${{ matrix.job.target }}${{ matrix.job.binary-extension }}
+          asset_content_type: application/octet-stream
