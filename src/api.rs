@@ -63,6 +63,7 @@ pub fn fetch_users(names: &[String]) -> anyhow::Result<Vec<ApiUser>> {
 }
 
 pub fn close_account(name: &str, api_key: &str) -> anyhow::Result<()> {
+    ensure!(!api_key.is_empty(), "No API key");
     let resp = ureq::post(&format!("https://lichess.org/mod/{}/close", name))
         .set("Authorization", &format!("Bearer {}", api_key))
         .call()?;

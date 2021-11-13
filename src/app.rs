@@ -489,7 +489,12 @@ impl epi::App for App {
                             api_key_edit.request_focus();
                             do_close |=
                                 api_key_edit.lost_focus() && ui.input().key_pressed(Key::Enter);
-                            do_close |= ui.button("Close accounts").clicked();
+                            do_close |= ui
+                                .add_enabled(
+                                    !self.api_key.is_empty(),
+                                    Button::new("Close accounts"),
+                                )
+                                .clicked();
                         });
                     })
                 });
