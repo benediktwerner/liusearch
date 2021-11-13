@@ -10,7 +10,7 @@ use anyhow::{bail, ensure};
 use chrono::Utc;
 use copypasta::ClipboardProvider;
 use eframe::{
-    egui::{self, vec2, Button, DragValue, Grid, Layout, ProgressBar, Slider, TextEdit, Ui},
+    egui::{self, vec2, Button, DragValue, Grid, Key, Layout, ProgressBar, Slider, TextEdit, Ui},
     epi,
 };
 use num_format::{Locale, ToFormattedString};
@@ -308,10 +308,14 @@ impl epi::App for App {
             }
             AskPassword(path) => {
                 let mut decrypt = false;
-                ui.vertical_centered_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(200.0);
                     ui.label("Password:");
-                    ui.add(TextEdit::singleline(&mut self.password).password(true));
-                    decrypt = ui.button("Decrypt").clicked();
+                    decrypt |= ui
+                        .add(TextEdit::singleline(&mut self.password).password(true))
+                        .lost_focus()
+                        && ui.input().key_pressed(Key::Enter);
+                    decrypt |= ui.button("Decrypt").clicked();
                 });
                 if decrypt {
                     let path = path.clone();
@@ -415,7 +419,8 @@ impl epi::App for App {
                 ui.add_enabled_ui(!s.processing.load(SeqCst), |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Username: ");
-                        do_search = ui.text_edit_singleline(&mut s.pattern).lost_focus();
+                        do_search |= ui.text_edit_singleline(&mut s.pattern).lost_focus()
+                            && ui.input().key_pressed(Key::Enter);
                         do_search |= ui.button("Search").clicked();
                         ui.label(format!(
                             "Matches {}/{:}",
@@ -482,7 +487,9 @@ impl epi::App for App {
                             ui.label("Admin API key:");
                             let api_key_edit = ui.text_edit_singleline(&mut self.api_key);
                             api_key_edit.request_focus();
-                            do_close = ui.button("Close accounts").clicked();
+                            do_close |=
+                                api_key_edit.lost_focus() && ui.input().key_pressed(Key::Enter);
+                            do_close |= ui.button("Close accounts").clicked();
                         });
                     })
                 });
