@@ -480,7 +480,8 @@ impl epi::App for App {
                         egui::popup::popup_below_widget(ui, api_key_popup_id, &close_btn, |ui| {
                             ui.set_min_width(200.0);
                             ui.label("Admin API key:");
-                            ui.text_edit_singleline(&mut self.api_key);
+                            let api_key_edit = ui.text_edit_singleline(&mut self.api_key);
+                            api_key_edit.request_focus();
                             do_close = ui.button("Close accounts").clicked();
                         });
                     })
