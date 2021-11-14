@@ -639,9 +639,15 @@ impl epi::App for App {
                                 }
                             };
 
-                            for user in &results[(s.page * self.page_size)
-                                ..((s.page + 1) * self.page_size).min(results.len())]
-                            {
+                            let mut min = s.page * self.page_size;
+                            let mut max = ((s.page + 1) * self.page_size).min(results.len());
+                            if min > max {
+                                min = 0;
+                                max = self.page_size.min(results.len());
+                                s.page = 0;
+                            }
+
+                            for user in &results[min..max] {
                                 let obvious = self.saved_obvious.contains(&user.name);
                                 let borderline = self.saved_borderline.contains(&user.name);
                                 let (mut clicked_obv, mut clicked_border) = (false, false);
