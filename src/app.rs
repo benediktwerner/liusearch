@@ -10,7 +10,7 @@ use anyhow::{bail, ensure};
 use chrono::Utc;
 use copypasta::ClipboardProvider;
 use eframe::{
-    egui::{self, vec2, Button, DragValue, Grid, Key, Layout, ProgressBar, Slider, TextEdit, Ui},
+    egui::{self, vec2, Button, DragValue, Grid, Key, Layout, ProgressBar, TextEdit},
     epi,
 };
 use num_format::{Locale, ToFormattedString};
@@ -66,18 +66,16 @@ pub struct App {
 }
 
 impl App {
-    fn render_pick_file(&mut self, ui: &mut Ui) {
-        if ui.button("Load Data").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Usernames", &["txt", "txt.gz", "txt.gpg", "txt.gz.gpg"])
-                .pick_file()
-            {
-                let ext = path.extension().unwrap_or_default();
-                if ext == "gpg" {
-                    self.state = State::AskPassword(path);
-                } else {
-                    self.load_plain(path);
-                }
+    fn load_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Usernames", &["txt", "txt.gz", "txt.gpg", "txt.gz.gpg"])
+            .pick_file()
+        {
+            let ext = path.extension().unwrap_or_default();
+            if ext == "gpg" {
+                self.state = State::AskPassword(path);
+            } else {
+                self.load_plain(path);
             }
         }
     }
@@ -303,9 +301,6 @@ impl epi::App for App {
         use State::*;
 
         egui::CentralPanel::default().show(ctx, |ui| match &mut self.state {
-            PickFile => {
-                ui.centered_and_justified(|ui| self.render_pick_file(ui));
-            }
             AskPassword(path) => {
                 let mut decrypt = false;
                 ui.vertical_centered(|ui| {
@@ -337,7 +332,7 @@ impl epi::App for App {
                             }
                             Some(Err(msg)) => {
                                 show_error(msg);
-                                self.state = PickFile;
+                                self.state = State::default();
                             }
                             None => (),
                         }
@@ -345,11 +340,25 @@ impl epi::App for App {
                 });
             }
             Loaded(s) => {
+                let mut do_load_file = false;
+                let mut do_load_clipboard = false;
+
                 // First taskbar (search controls)
                 ui.horizontal_wrapped(|ui| {
-                    ui.add(Slider::new(&mut self.page_size, 10..=100).text("Results per page"));
-
+                    do_load_file = ui.button("Load file").clicked();
+                    do_load_clipboard = ui
+                        .button("Load from clipboard")
+                        .on_hover_text(
+                            "One username per line with leading slash or Lichess URL.\n\
+                         Non-conforming lines and text after the username will be removed.",
+                        )
+                        .clicked();
                     ui.add_space(20.0);
+
+                    ui.label("Results per page:");
+                    ui.add(DragValue::new(&mut self.page_size).clamp_range(10..=100));
+                    ui.add_space(20.0);
+
                     ui.label("Search mode: ");
                     ui.radio_value(&mut self.search_mode, SearchMode::Plain, "Plain")
                         .on_hover_text("Search for the text as is");
@@ -406,13 +415,17 @@ impl epi::App for App {
                     }
                 });
 
+                if do_load_file {
+                    self.load_file();
+                    return;
+                }
+
                 ui.separator();
 
                 let results = s.results.clone();
                 let mut results = results.lock().unwrap();
                 let mut do_search = false;
                 let mut do_update = false;
-                let mut do_load_clipboard = false;
                 let mut do_close = false;
 
                 // Second taskbar (search input + save lists)
@@ -453,14 +466,6 @@ impl epi::App for App {
                             }
                             ui.add_space(20.0);
                         }
-                        do_load_clipboard = ui
-                            .button("Load from clipboard")
-                            .on_hover_text(
-                                "One username per line with leading slash or Lichess URL.\n\
-                                 Non-conforming lines and text after the username will be removed.",
-                            )
-                            .clicked();
-                        ui.add_space(20.0);
                         do_update = ui
                             .button("Fetch additional info")
                             .on_hover_text(

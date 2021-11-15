@@ -90,7 +90,6 @@ pub struct LoadedState {
 }
 
 pub enum State {
-    PickFile,
     AskPassword(PathBuf),
     Loading(LoadingState),
     Loaded(LoadedState),
@@ -112,7 +111,7 @@ impl State {
 
 impl Default for State {
     fn default() -> Self {
-        Self::PickFile
+        Self::loaded(Vec::new())
     }
 }
 
