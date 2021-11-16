@@ -555,7 +555,7 @@ impl epi::App for App {
                 if do_load_clipboard {
                     if let Some(clip) = get_clipboard() {
                         let regex =
-                            Regex::new("^(?:https://lichess.org/@)?/([a-zA-Z0-9_-]{2,30})\\b")
+                            Regex::new("^(?:https://lichess.org/@)?/([a-zA-Z0-9_-]{2,40})(?:$|\\s)")
                                 .unwrap();
                         *results = clip
                             .lines()
