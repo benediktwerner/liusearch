@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Read},
     path::PathBuf,
-    sync::atomic::Ordering::SeqCst,
+    sync::{atomic::Ordering::SeqCst, Arc, Mutex},
     time::Duration,
 };
 
@@ -26,6 +26,10 @@ use crate::api;
 use crate::model::*;
 
 const MAX_CLOSE: usize = 250;
+const VERSION: &str = include_str!("../latest-version.txt");
+const VERSION_URL: &str =
+    "https://raw.githubusercontent.com/benediktwerner/liusearch/master/latest-version.txt";
+const RELEASE_URL: &str = "https://github.com/benediktwerner/liusearch/releases";
 
 impl Searcher {
     fn matches(&self, username: &str) -> Option<u32> {
@@ -61,6 +65,8 @@ pub struct App {
     levenshtein_settings: LevenshteinSettings,
     saved_borderline: HashSet<String>,
     saved_obvious: HashSet<String>,
+    #[serde(skip)]
+    update: Arc<Mutex<Option<String>>>,
     #[serde(skip)]
     state: State,
 }
@@ -272,6 +278,7 @@ impl Default for App {
             search_mode: Default::default(),
             saved_borderline: Default::default(),
             saved_obvious: Default::default(),
+            update: Default::default(),
             state: Default::default(),
         }
     }
@@ -279,7 +286,10 @@ impl Default for App {
 
 impl epi::App for App {
     fn name(&self) -> &str {
-        "Lichess User Search"
+        concat!(
+            "Lichess User Search - ",
+            include_str!("../latest-version.txt")
+        )
     }
 
     fn setup(
@@ -291,6 +301,18 @@ impl epi::App for App {
         if let Some(storage) = _storage {
             *self = epi::get_value(storage, epi::APP_KEY).unwrap_or_default()
         }
+        let update = self.update.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = (|| -> anyhow::Result<()> {
+                let version = ureq::get(VERSION_URL).call()?.into_string()?;
+                if version != VERSION {
+                    *update.lock().unwrap() = Some(version);
+                }
+                Ok(())
+            })() {
+                show_error(format!("Failed to check for updates: {}", error));
+            }
+        });
     }
 
     fn save(&mut self, storage: &mut dyn epi::Storage) {
@@ -724,6 +746,15 @@ impl epi::App for App {
                         }
                     });
                 });
+
+                if let Some(new_version) = self.update.lock().unwrap().as_deref() {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("Update available: ");
+                        ui.hyperlink_to(new_version, RELEASE_URL);
+                        ui.label(format!(" (currently running {})", VERSION));
+                    });
+                }
 
                 // Handle scrolling (to move through pages)
                 match ctx.input().scroll_delta.y {
