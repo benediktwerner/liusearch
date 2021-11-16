@@ -675,6 +675,7 @@ impl epi::App for App {
                                 s.page = 0;
                             }
 
+                            let mut remove: Option<String> = None;
                             for user in &results[min..max] {
                                 let obvious = self.saved_obvious.contains(&user.name);
                                 let borderline = self.saved_borderline.contains(&user.name);
@@ -690,6 +691,13 @@ impl epi::App for App {
                                             "+Borderline"
                                         })
                                         .clicked();
+                                    if ui
+                                        .button("X")
+                                        .on_hover_text("Hide/Exclude from results")
+                                        .clicked()
+                                    {
+                                        remove = Some(user.id.clone());
+                                    }
                                 });
 
                                 if clicked_border || (clicked_obv && obvious) {
@@ -717,6 +725,10 @@ impl epi::App for App {
                                 ui.label(user.games);
                                 ui.label(user.k);
                                 ui.end_row();
+                            }
+
+                            if let Some(remove) = remove {
+                                results.retain(|u| u.id != remove);
                             }
                         });
                 });
