@@ -56,7 +56,7 @@ impl From<&str> for Match {
 
 impl From<&String> for Match {
     fn from(name: &String) -> Self {
-        name.into()
+        name.as_str().into()
     }
 }
 
