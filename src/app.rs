@@ -10,7 +10,11 @@ use anyhow::{bail, ensure};
 use chrono::Utc;
 use copypasta::ClipboardProvider;
 use eframe::{
-    egui::{self, vec2, Button, DragValue, Grid, Key, Layout, ProgressBar, TextEdit},
+    egui::{
+        self, vec2, Button, DragValue, Grid, Hyperlink, Key, Layout, ProgressBar, RichText,
+        TextEdit,
+    },
+    epaint::Color32,
     epi,
 };
 use num_format::{Locale, ToFormattedString};
@@ -26,6 +30,7 @@ use crate::api;
 use crate::model::*;
 
 const MAX_CLOSE: usize = 250;
+const DEFAULT_PAGE_SIZE: usize = 20;
 const VERSION: &str = include_str!("../latest-version.txt");
 const VERSION_URL: &str =
     "https://raw.githubusercontent.com/benediktwerner/liusearch/master/latest-version.txt";
@@ -57,12 +62,13 @@ impl Searcher {
 #[derive(Deserialize, Serialize)]
 #[serde(default)]
 pub struct App {
-    #[serde(default = "default_page_size")]
     page_size: usize,
     password: String,
     api_key: String,
     search_mode: SearchMode,
     levenshtein_settings: LevenshteinSettings,
+    always_fetch_info: bool,
+    hide_closed: bool,
     saved_borderline: HashSet<String>,
     saved_obvious: HashSet<String>,
     #[serde(skip)]
@@ -200,7 +206,13 @@ impl App {
         });
     }
 
-    fn do_search(s: LoadedState, mode: SearchMode, lev: LevenshteinSettings) {
+    fn do_search(
+        s: LoadedState,
+        mode: SearchMode,
+        lev: LevenshteinSettings,
+        fetch_info: bool,
+        hide_closed: bool,
+    ) {
         if s.pattern.len() < 3 {
             return;
         }
@@ -259,23 +271,74 @@ impl App {
             if mode == SearchMode::Levenshtein {
                 s.results.lock().unwrap().sort_unstable_by_key(|m| m.k);
             }
-            s.processing.store(false, SeqCst);
+            if fetch_info {
+                Self::do_fetch_info_inner(s, hide_closed);
+            } else {
+                s.processing.store(false, SeqCst);
+            }
         });
     }
-}
 
-fn default_page_size() -> usize {
-    20
+    fn do_fetch_info(s: LoadedState, hide_closed: bool) {
+        s.processing.store(true, SeqCst);
+        std::thread::spawn(move || Self::do_fetch_info_inner(s, hide_closed));
+    }
+
+    fn do_fetch_info_inner(s: LoadedState, hide_closed: bool) {
+        s.progress.store(0, SeqCst);
+
+        let results = s.results.lock().unwrap();
+        let max = results.len().min(5 * 300);
+        s.progress_max.store(max.max(1), SeqCst);
+        let names = results[..max]
+            .iter()
+            .map(|u| &u.name)
+            .cloned()
+            .collect::<Vec<String>>();
+        drop(results);
+
+        let progress = s.progress.clone();
+        let processing = s.processing.clone();
+        let results = s.results.clone();
+        let mut api_users = HashMap::new();
+        for group in names.chunks(300) {
+            match api::fetch_users(group) {
+                Ok(users) => api_users.extend(users.into_iter().map(|u| (u.id.clone(), u))),
+                Err(err) => {
+                    show_error(err);
+                    break;
+                }
+            }
+            progress.fetch_add(1, SeqCst);
+        }
+        if !api_users.is_empty() {
+            let mut results = results.lock().unwrap();
+            for user in results[..max].iter_mut() {
+                if let Some(u) = api_users.remove(&user.id) {
+                    user.created_at = u.created_at;
+                    user.seen_at = u.seen_at;
+                    user.games = u.perfs.sum_games();
+                    user.enabled = !u.disabled;
+                }
+            }
+            if hide_closed {
+                results.retain(|u| u.enabled);
+            }
+        }
+        processing.store(false, SeqCst);
+    }
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
-            page_size: default_page_size(),
+            page_size: DEFAULT_PAGE_SIZE,
             password: Default::default(),
             api_key: Default::default(),
             levenshtein_settings: Default::default(),
             search_mode: Default::default(),
+            always_fetch_info: false,
+            hide_closed: false,
             saved_borderline: Default::default(),
             saved_obvious: Default::default(),
             update: Default::default(),
@@ -294,8 +357,8 @@ impl epi::App for App {
 
     fn setup(
         &mut self,
-        _ctx: &egui::CtxRef,
-        _frame: &mut epi::Frame<'_>,
+        _ctx: &egui::Context,
+        _frame: &epi::Frame,
         _storage: Option<&dyn epi::Storage>,
     ) {
         if let Some(storage) = _storage {
@@ -319,7 +382,7 @@ impl epi::App for App {
         epi::set_value(storage, epi::APP_KEY, self);
     }
 
-    fn update(&mut self, ctx: &egui::CtxRef, _frame: &mut epi::Frame<'_>) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &epi::Frame) {
         use State::*;
 
         egui::CentralPanel::default().show(ctx, |ui| match &mut self.state {
@@ -372,13 +435,13 @@ impl epi::App for App {
                         .button("Load from clipboard")
                         .on_hover_text(
                             "One username per line with leading slash or Lichess URL.\n\
-                         Non-conforming lines and text after the username will be removed.",
+                             Non-conforming lines and text after the username will be removed.",
                         )
                         .clicked();
                     ui.add_space(20.0);
 
                     ui.label("Results per page:");
-                    ui.add(DragValue::new(&mut self.page_size).clamp_range(10..=100));
+                    ui.add(DragValue::new(&mut self.page_size).clamp_range(10..=100_u8));
                     ui.add_space(20.0);
 
                     ui.label("Search mode: ");
@@ -406,20 +469,20 @@ impl epi::App for App {
                         ui.add(
                             DragValue::new(&mut self.levenshtein_settings.max_k)
                                 .speed(0.2)
-                                .clamp_range(1..=10),
+                                .clamp_range(1..=10_u8),
                         );
                         ui.add_space(20.0);
                         ui.label("Cost:");
                         ui.add(
                             DragValue::new(&mut self.levenshtein_settings.mismatch_cost)
                                 .speed(0.2)
-                                .clamp_range(1..=10),
+                                .clamp_range(1..=10_u8),
                         )
                         .on_hover_text("Mismatch cost (cost of an incorrect letter)");
                         ui.add(
                             DragValue::new(&mut self.levenshtein_settings.gap_cost)
                                 .speed(0.2)
-                                .clamp_range(1..=10),
+                                .clamp_range(1..=10_u8),
                         )
                         .on_hover_text("Gap cost (cost of a missing/additional letter)");
                         let max_cost = self
@@ -435,19 +498,19 @@ impl epi::App for App {
                         )
                         .on_hover_text("Swap cost (cost of swapping two adjacent letters)");
                     }
-                });
 
-                if do_load_file {
-                    self.load_file();
-                    return;
-                }
+                    ui.add_space(40.0);
+                    ui.checkbox(&mut self.always_fetch_info, "Auto-fetch info after search");
+                    ui.checkbox(&mut self.hide_closed, "Hide closed accs")
+                        .on_hover_text("Only works after fetching additional info");
+                });
 
                 ui.separator();
 
                 let results = s.results.clone();
                 let mut results = results.lock().unwrap();
                 let mut do_search = false;
-                let mut do_update = false;
+                let mut do_fetch_info = false;
                 let mut do_close = false;
 
                 // Second taskbar (search input + save lists)
@@ -456,7 +519,9 @@ impl epi::App for App {
                         ui.label("Username: ");
                         do_search |= ui.text_edit_singleline(&mut s.pattern).lost_focus()
                             && ui.input().key_pressed(Key::Enter);
-                        do_search |= ui.button("Search").clicked();
+                        do_search |= ui
+                            .add_enabled(s.pattern.len() >= 3, Button::new("Search"))
+                            .clicked();
                         ui.label(format!(
                             "Matches {}/{:}",
                             results.len(),
@@ -488,7 +553,7 @@ impl epi::App for App {
                             }
                             ui.add_space(20.0);
                         }
-                        do_update = ui
+                        do_fetch_info = ui
                             .button("Fetch additional info")
                             .on_hover_text(
                                 "Fetch additional information about found users from Lichess",
@@ -527,51 +592,35 @@ impl epi::App for App {
                 });
 
                 if do_search {
-                    s.page = 0;
-                    results.clear();
-                    App::do_search(s.clone(), self.search_mode, self.levenshtein_settings);
+                    if s.users.is_empty() {
+                        do_load_file = MessageDialog::new()
+                            .set_title("Error: No user list loaded")
+                            .set_description(
+                                "You haven't loaded a user list yet. Do you want to load one?",
+                            )
+                            .set_level(MessageLevel::Error)
+                            .set_buttons(MessageButtons::YesNo)
+                            .show();
+                    } else {
+                        s.page = 0;
+                        results.clear();
+                        App::do_search(
+                            s.clone(),
+                            self.search_mode,
+                            self.levenshtein_settings,
+                            self.always_fetch_info,
+                            self.hide_closed,
+                        );
+                    }
                 }
 
-                if do_update {
-                    s.processing.store(true, SeqCst);
-                    s.progress.store(0, SeqCst);
-                    let max = results.len().min(5 * 300);
-                    s.progress_max.store(max.max(1), SeqCst);
-                    let names = results[..max]
-                        .iter()
-                        .map(|u| &u.name)
-                        .cloned()
-                        .collect::<Vec<String>>();
-                    let progress = s.progress.clone();
-                    let processing = s.processing.clone();
-                    let results = s.results.clone();
-                    std::thread::spawn(move || {
-                        let mut api_users = HashMap::new();
-                        for group in names.chunks(300) {
-                            match api::fetch_users(group) {
-                                Ok(users) => {
-                                    api_users.extend(users.into_iter().map(|u| (u.id.clone(), u)))
-                                }
-                                Err(err) => {
-                                    show_error(err);
-                                    break;
-                                }
-                            }
-                            progress.fetch_add(1, SeqCst);
-                        }
-                        if !api_users.is_empty() {
-                            let mut results = results.lock().unwrap();
-                            for user in results[..max].iter_mut() {
-                                if let Some(u) = api_users.remove(&user.id) {
-                                    user.created_at = u.created_at;
-                                    user.seen_at = u.seen_at;
-                                    user.games = u.perfs.sum_games();
-                                    user.enabled = !u.disabled;
-                                }
-                            }
-                        }
-                        processing.store(false, SeqCst);
-                    });
+                if do_load_file {
+                    self.load_file();
+                    return;
+                }
+
+                if do_fetch_info {
+                    App::do_fetch_info(s.clone(), self.hide_closed);
                 }
 
                 if do_load_clipboard {
@@ -711,19 +760,22 @@ impl epi::App for App {
                                 } else if clicked_border && !borderline {
                                     self.saved_borderline.insert(user.name.clone());
                                 }
-                                ui.hyperlink_to(
-                                    format!(
-                                        "{} {}{}",
-                                        user.name,
-                                        if user.enabled { "" } else { "🔒" },
-                                        if obvious || borderline { "⭐" } else { "" }
-                                    ),
-                                    &format!("https://lichess.org/@/{}", user.id),
-                                );
+                                let mut name = RichText::new(format!(
+                                    "{} {}",
+                                    user.name,
+                                    if obvious || borderline { "⭐" } else { "" }
+                                ));
+                                if !user.enabled {
+                                    name = name.color(Color32::RED).strikethrough()
+                                }
+                                ui.add(Hyperlink::from_label_and_url(
+                                    name,
+                                    format!("https://lichess.org/@/{}", user.id),
+                                ));
                                 ui.label(user.created_at.map(timeago).unwrap_or_default());
                                 ui.label(user.seen_at.map(timeago).unwrap_or_default());
-                                ui.label(user.games);
-                                ui.label(user.k);
+                                ui.label(user.games.to_string());
+                                ui.label(user.k.to_string());
                                 ui.end_row();
                             }
 

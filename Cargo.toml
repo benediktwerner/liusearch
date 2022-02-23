@@ -11,8 +11,8 @@ chrono = { version = "0.4", features = [
     "serde",
     "clock"
 ], default-features = false }
-eframe = { version = "0.15.0", features = ["persistence"] }
-rfd = "0.5"
+eframe = { version = "0.17.0", features = ["persistence"] }
+rfd = "0.8"
 num-format = "0.4"
 progress-streams = "1.1"
 copypasta = "0.7"
