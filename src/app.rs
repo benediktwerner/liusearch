@@ -349,19 +349,19 @@ impl Default for App {
 
 impl epi::App for App {
     fn name(&self) -> &str {
-        concat!(
-            "Lichess User Search - ",
-            include_str!("../latest-version.txt")
-        )
+        "Lichess User Search"
     }
 
     fn setup(
         &mut self,
         _ctx: &egui::Context,
-        _frame: &epi::Frame,
-        _storage: Option<&dyn epi::Storage>,
+        frame: &epi::Frame,
+        storage: Option<&dyn epi::Storage>,
     ) {
-        if let Some(storage) = _storage {
+        frame.set_window_title(Box::leak(
+            format!("Lichess User Search - {VERSION}").into_boxed_str(),
+        ));
+        if let Some(storage) = storage {
             *self = epi::get_value(storage, epi::APP_KEY).unwrap_or_default()
         }
         let update = self.update.clone();
