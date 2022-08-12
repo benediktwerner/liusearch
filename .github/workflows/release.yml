@@ -1,4 +1,4 @@
-# Adapted from https://github.com/niklasf/liusearch/blob/master/.github/workflows/release.yml
+# Adapted from https://github.com/lichess-org/fishnet/blob/c6db44dd9541aab1ae8e16f91fa8412bc51b25c3/.github/workflows/release.yml
 
 name: Build
 
