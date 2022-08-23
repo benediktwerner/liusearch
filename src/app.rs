@@ -324,6 +324,14 @@ impl App {
             if hide_closed {
                 results.retain(|u| u.enabled);
             }
+            results.sort_unstable_by_key(|m| {
+                (
+                    m.k,
+                    -m.seen_at.map(|t| t.timestamp()).unwrap_or(0),
+                    -m.created_at.map(|t| t.timestamp()).unwrap_or(0),
+                    u32::MAX - m.games,
+                )
+            });
         }
         processing.store(false, SeqCst);
     }
