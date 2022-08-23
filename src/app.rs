@@ -222,15 +222,15 @@ impl App {
             SearchMode::Plain => Searcher::Plain(pattern),
             SearchMode::NumberReplacements => {
                 let pattern = pattern
-                    .replace("a", "[a4]")
-                    .replace("e", "[e3]")
-                    .replace("g", "[gq9]")
-                    .replace("i", "[il1]")
-                    .replace("l", "[il1]")
-                    .replace("o", "[o0]")
-                    .replace("s", "[s5]")
-                    .replace("u", "[uv]")
-                    .replace("z", "[z2]");
+                    .replace('a', "[a4]")
+                    .replace('e', "[e3]")
+                    .replace('g', "[gq9]")
+                    .replace('i', "[il1]")
+                    .replace('l', "[il1]")
+                    .replace('o', "[o0]")
+                    .replace('s', "[s5]")
+                    .replace('u', "[uv]")
+                    .replace('z', "[z2]");
                 match Regex::new(&pattern) {
                     Ok(regex) => Searcher::Regex(regex),
                     Err(error) => {
