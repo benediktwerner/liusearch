@@ -12,13 +12,13 @@ chrono = { version = "0.4", features = [
     "clock"
 ], default-features = false }
 eframe = { version = "0.17.0", features = ["persistence"] }
-rfd = "0.8"
+rfd = "0.10"
 num-format = "0.4"
 progress-streams = "1.1"
-copypasta = "0.7"
+copypasta = "0.8"
 regex = "1.5"
 ureq = { version = "2.3", features = ["json"] }
-pgp = "0.7"
+pgp = "0.8"
 triple_accel = "0.4"
 anyhow = "1.0"
 flate2 = "1.0"
