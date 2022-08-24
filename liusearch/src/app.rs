@@ -31,7 +31,7 @@ use crate::model::*;
 
 const MAX_CLOSE: usize = 250;
 const DEFAULT_PAGE_SIZE: usize = 20;
-const VERSION: &str = include_str!("../latest-version.txt");
+const VERSION: &str = include_str!("../../latest-version.txt");
 const VERSION_URL: &str =
     "https://raw.githubusercontent.com/benediktwerner/liusearch/master/latest-version.txt";
 const RELEASE_URL: &str = "https://github.com/benediktwerner/liusearch/releases";
