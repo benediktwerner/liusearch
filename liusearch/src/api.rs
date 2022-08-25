@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::ensure;
 use chrono::{serde::ts_milliseconds_option, DateTime, Utc};
 use serde::Deserialize;
@@ -64,15 +66,33 @@ pub fn fetch_users(names: &[String]) -> anyhow::Result<Vec<ApiUser>> {
 
 pub fn close_account(name: &str, api_key: &str) -> anyhow::Result<()> {
     ensure!(!api_key.is_empty(), "No API key");
+
     let resp = ureq::post(&format!("https://lichess.org/mod/{}/close", name))
         .set("Authorization", &format!("Bearer {}", api_key))
         .call()?;
     ensure!(
-        resp.status() < 400,
+        resp.status() == 200,
         "Error {} when closing {}: {}",
         resp.status(),
         name,
         resp.status_text()
     );
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    let resp = ureq::post(&format!("https://lichess.org/api/user/{}/note", name))
+        .set("Authorization", &format!("Bearer {}", api_key))
+        .send_json(ureq::json!({
+          "text": "Closed for username",
+          "mod": true,
+        }))?;
+    ensure!(
+        resp.status() == 200,
+        "Error {} when adding the mod note to {}: {}",
+        resp.status(),
+        name,
+        resp.status_text()
+    );
+
     Ok(())
 }

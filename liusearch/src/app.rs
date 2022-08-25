@@ -655,18 +655,19 @@ impl epi::App for App {
                         .set_buttons(MessageButtons::OkCancel)
                         .show()
                 {
-                    s.processing.store(true, SeqCst);
-                    s.progress.store(0, SeqCst);
-                    s.progress_max.store(results.len().max(1), SeqCst);
-                    let progress = s.progress.clone();
-                    let processing = s.processing.clone();
-                    let api_key = self.api_key.clone();
                     let names = results
                         .iter()
                         .filter(|u| u.enabled)
                         .map(|u| &u.name)
                         .cloned()
                         .collect::<Vec<String>>();
+                    s.processing.store(true, SeqCst);
+                    s.progress.store(0, SeqCst);
+                    s.progress_max.store(names.len().max(1), SeqCst);
+
+                    let progress = s.progress.clone();
+                    let processing = s.processing.clone();
+                    let api_key = self.api_key.clone();
                     std::thread::spawn(move || {
                         for name in &names {
                             if let Err(error) = api::close_account(name, &api_key) {
