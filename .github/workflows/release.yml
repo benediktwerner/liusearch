@@ -5,7 +5,7 @@ name: Build
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
   release:
@@ -29,20 +29,20 @@ jobs:
     strategy:
       matrix:
         job:
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             os-name: linux-x86-64
             target: x86_64-unknown-linux-gnu
             toolchain: stable
             binary-extension: ''
             env:
               CXX: g++
-          - os: windows-2016
+          - os: windows-2019
             os-name: windows-x86-64
             target: x86_64-pc-windows-gnu
             toolchain: stable-x86_64-pc-windows-gnu
             binary-extension: '.exe'
             env: {}
-          - os: macos-10.15
+          - os: macos-11
             os-name: macos-x86-64
             target: x86_64-apple-darwin
             toolchain: stable
