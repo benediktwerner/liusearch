@@ -123,7 +123,7 @@ fn main() {
         }
         Command::Extract { file } => {
             let outfile = file
-                .replace(".pgn.bz2", ".txt")
+                .replace(".pgn.zst", ".txt")
                 .replace("lichess_db_", "names-")
                 .replace("_rated_", "-");
             let file = File::open(file).unwrap();
@@ -137,7 +137,7 @@ fn main() {
 fn run_download(variant: &str, year: u32, month: u32, progress_step: u64) {
     println!("{variant} {year} {month}");
     let resp = reqwest::blocking::get(format!(
-        "https://database.lichess.org/{variant}/lichess_db_{variant}_rated_{year}-{month:02}.pgn.bz2"
+        "https://database.lichess.org/{variant}/lichess_db_{variant}_rated_{year}-{month:02}.pgn.zst"
     ))
     .unwrap()
     .error_for_status()
@@ -163,7 +163,7 @@ fn run(reader: impl Read, length: u64, outfile: &str, progress_step: u64) {
             nxt_prog += progress_step;
         }
     });
-    let decoder = bzip2::read::MultiBzDecoder::new(progress_reader);
+    let decoder = zstd::Decoder::new(progress_reader).unwrap();
     let reader = BufReader::new(decoder);
 
     for line in reader.lines() {
