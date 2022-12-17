@@ -26,7 +26,7 @@ pub struct Match {
     pub k: u32,
 }
 
-impl  Match {
+impl Match {
     pub fn new(user: &Username, k: u32) -> Self {
         Self {
             id: user.id.clone(),
@@ -145,7 +145,7 @@ pub struct LevenshteinSettings {
 }
 
 impl LevenshteinSettings {
-    pub fn edit_costs(&self) -> EditCosts {
+    pub fn edit_costs(self) -> EditCosts {
         levenshtein::EditCosts::new(self.mismatch_cost, self.gap_cost, 0, Some(self.swap_cost))
     }
 }

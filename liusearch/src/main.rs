@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(clippy::cast_precision_loss)]
 
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 

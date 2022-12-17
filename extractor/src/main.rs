@@ -50,7 +50,7 @@ enum Variant {
 }
 
 impl Variant {
-    const fn iter(self) -> &'static [&'static str] {
+    const fn names(self) -> &'static [&'static str] {
         match self {
             Variant::All => &[
                 "standard",
@@ -97,7 +97,7 @@ fn main() {
             year_to,
             month_to,
         } => {
-            for variant in variant.iter() {
+            for variant in variant.names() {
                 if let (Some(year_to), Some(month_to)) = (year_to, month_to) {
                     if year == year_to {
                         for m in month..=month_to {
@@ -129,7 +129,7 @@ fn main() {
             let file = File::open(file).unwrap();
             let length = file.metadata().unwrap().len();
             let reader = BufReader::new(file);
-            run(reader, length, &outfile, args.progress)
+            run(reader, length, &outfile, args.progress);
         }
     }
 }

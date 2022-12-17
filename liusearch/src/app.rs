@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Display,
     io::{BufRead, BufReader, Read},
     path::PathBuf,
     sync::{atomic::Ordering::SeqCst, Arc, Mutex},
@@ -24,7 +25,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 use serde::{Deserialize, Serialize};
-use triple_accel::levenshtein::{self};
+use triple_accel::levenshtein;
 
 use crate::api;
 use crate::model::*;
@@ -40,8 +41,8 @@ impl Searcher {
     fn matches(&self, username: &str) -> Option<u32> {
         use Searcher::*;
         match self {
-            Plain(pattern) => username.contains(pattern).then(|| 0),
-            Regex(regex) => regex.is_match(username).then(|| 0),
+            Plain(pattern) => username.contains(pattern).then_some(0),
+            Regex(regex) => regex.is_match(username).then_some(0),
             Levenshtein(pattern, ..) if username.len() < pattern.len() => None,
             Levenshtein(pattern, lev) => levenshtein::levenshtein_search_simd_with_opts(
                 pattern.as_bytes(),
@@ -225,8 +226,7 @@ impl App {
                     .replace('a', "[a4]")
                     .replace('e', "[e3]")
                     .replace('g', "[gq9]")
-                    .replace('i', "[il1]")
-                    .replace('l', "[il1]")
+                    .replace(['i', 'l'], "[il1]")
                     .replace('o', "[o0]")
                     .replace('s', "[s5]")
                     .replace('u', "[uv]")
@@ -234,7 +234,7 @@ impl App {
                 match Regex::new(&pattern) {
                     Ok(regex) => Searcher::Regex(regex),
                     Err(error) => {
-                        show_error(error);
+                        show_error(&error);
                         return;
                     }
                 }
@@ -243,7 +243,7 @@ impl App {
             SearchMode::RegEx => match Regex::new(&pattern) {
                 Ok(regex) => Searcher::Regex(regex),
                 Err(error) => {
-                    show_error(error);
+                    show_error(&error);
                     return;
                 }
             },
@@ -272,7 +272,7 @@ impl App {
                 s.results.lock().unwrap().sort_unstable_by_key(|m| m.k);
             }
             if fetch_info {
-                Self::do_fetch_info_inner(s, hide_closed);
+                Self::do_fetch_info_inner(&s, hide_closed);
             } else {
                 s.processing.store(false, SeqCst);
             }
@@ -281,10 +281,10 @@ impl App {
 
     fn do_fetch_info(s: LoadedState, hide_closed: bool) {
         s.processing.store(true, SeqCst);
-        std::thread::spawn(move || Self::do_fetch_info_inner(s, hide_closed));
+        std::thread::spawn(move || Self::do_fetch_info_inner(&s, hide_closed));
     }
 
-    fn do_fetch_info_inner(s: LoadedState, hide_closed: bool) {
+    fn do_fetch_info_inner(s: &LoadedState, hide_closed: bool) {
         s.progress.store(0, SeqCst);
 
         let results = s.results.lock().unwrap();
@@ -305,7 +305,7 @@ impl App {
             match api::fetch_users(group) {
                 Ok(users) => api_users.extend(users.into_iter().map(|u| (u.id.clone(), u))),
                 Err(err) => {
-                    show_error(err);
+                    show_error(&err);
                     break;
                 }
             }
@@ -327,8 +327,8 @@ impl App {
             results.sort_unstable_by_key(|m| {
                 (
                     m.k,
-                    -m.seen_at.map(|t| t.timestamp()).unwrap_or(0),
-                    -m.created_at.map(|t| t.timestamp()).unwrap_or(0),
+                    -m.seen_at.map_or(0, |t| t.timestamp()),
+                    -m.created_at.map_or(0, |t| t.timestamp()),
                     u32::MAX - m.games,
                 )
             });
@@ -370,7 +370,7 @@ impl epi::App for App {
             format!("Lichess User Search - {VERSION}").into_boxed_str(),
         ));
         if let Some(storage) = storage {
-            *self = epi::get_value(storage, epi::APP_KEY).unwrap_or_default()
+            *self = epi::get_value(storage, epi::APP_KEY).unwrap_or_default();
         }
         let update = self.update.clone();
         std::thread::spawn(move || {
@@ -381,7 +381,7 @@ impl epi::App for App {
                 }
                 Ok(())
             })() {
-                show_error(format!("Failed to check for updates: {}", error));
+                show_error(&format!("Failed to check for updates: {}", error));
             }
         });
     }
@@ -424,7 +424,7 @@ impl epi::App for App {
                                 self.state = State::loaded(data);
                             }
                             Some(Err(msg)) => {
-                                show_error(msg);
+                                show_error(&msg);
                                 self.state = State::default();
                             }
                             None => (),
@@ -671,7 +671,7 @@ impl epi::App for App {
                     std::thread::spawn(move || {
                         for name in &names {
                             if let Err(error) = api::close_account(name, &api_key) {
-                                show_error(error);
+                                show_error(&error);
                                 break;
                             }
                             progress.fetch_add(1, SeqCst);
@@ -775,7 +775,7 @@ impl epi::App for App {
                                     if obvious || borderline { "⭐" } else { "" }
                                 ));
                                 if !user.enabled {
-                                    name = name.color(Color32::RED).strikethrough()
+                                    name = name.color(Color32::RED).strikethrough();
                                 }
                                 ui.add(Hyperlink::from_label_and_url(
                                     name,
@@ -843,7 +843,7 @@ impl epi::App for App {
 
 fn copy_to_clipboard(s: String) {
     if let Some(Err(error)) = clipboard().map(|mut ctx| ctx.set_contents(s)) {
-        show_error(error);
+        show_error(&error);
     }
 }
 
@@ -851,7 +851,7 @@ fn get_clipboard() -> Option<String> {
     clipboard().and_then(|mut ctx| match ctx.get_contents() {
         Ok(s) => Some(s),
         Err(error) => {
-            show_error(error);
+            show_error(&error);
             None
         }
     })
@@ -861,17 +861,17 @@ fn clipboard() -> Option<copypasta::ClipboardContext> {
     match copypasta::ClipboardContext::new() {
         Ok(ctx) => Some(ctx),
         Err(error) => {
-            show_error(error);
+            show_error(&error);
             None
         }
     }
 }
 
-fn show_error(msg: impl ToString) {
+fn show_error(msg: &impl Display) {
     MessageDialog::new()
         .set_title("Error")
         .set_buttons(MessageButtons::Ok)
-        .set_description(&format!("Error: {}", msg.to_string()))
+        .set_description(&format!("Error: {}", msg))
         .set_level(MessageLevel::Error)
         .show();
 }

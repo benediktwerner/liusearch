@@ -37,17 +37,17 @@ pub struct ApiPerfs {
 
 impl ApiPerfs {
     pub fn sum_games(self) -> u32 {
-        self.chess960.map(|p| p.games).unwrap_or(0)
-            + self.atomic.map(|p| p.games).unwrap_or(0)
-            + self.racingKings.map(|p| p.games).unwrap_or(0)
-            + self.ultraBullet.map(|p| p.games).unwrap_or(0)
-            + self.blitz.map(|p| p.games).unwrap_or(0)
-            + self.kingOfTheHill.map(|p| p.games).unwrap_or(0)
-            + self.bullet.map(|p| p.games).unwrap_or(0)
-            + self.correspondence.map(|p| p.games).unwrap_or(0)
-            + self.horde.map(|p| p.games).unwrap_or(0)
-            + self.classical.map(|p| p.games).unwrap_or(0)
-            + self.rapid.map(|p| p.games).unwrap_or(0)
+        self.chess960.map_or(0, |p| p.games)
+            + self.atomic.map_or(0, |p| p.games)
+            + self.racingKings.map_or(0, |p| p.games)
+            + self.ultraBullet.map_or(0, |p| p.games)
+            + self.blitz.map_or(0, |p| p.games)
+            + self.kingOfTheHill.map_or(0, |p| p.games)
+            + self.bullet.map_or(0, |p| p.games)
+            + self.correspondence.map_or(0, |p| p.games)
+            + self.horde.map_or(0, |p| p.games)
+            + self.classical.map_or(0, |p| p.games)
+            + self.rapid.map_or(0, |p| p.games)
     }
 }
 
