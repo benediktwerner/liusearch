@@ -73,7 +73,7 @@ jobs:
           toolchain: ${{ matrix.job.toolchain }}
           target: ${{ matrix.job.target }}
           override: true
-      - run: sudo apt-get update && sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - run: sudo apt-get update && sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libgtk-3-dev
         if: matrix.job.os-name == 'linux-x86-64'
       - uses: actions-rs/cargo@v1
         with:
