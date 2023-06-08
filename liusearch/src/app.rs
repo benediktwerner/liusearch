@@ -15,8 +15,8 @@ use eframe::{
         self, vec2, Button, DragValue, Grid, Hyperlink, Key, Layout, ProgressBar, RichText,
         TextEdit,
     },
+    emath::Align,
     epaint::Color32,
-    epi,
 };
 use num_format::{Locale, ToFormattedString};
 use pgp::Deserializable;
@@ -81,7 +81,7 @@ pub struct App {
 impl App {
     fn load_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Usernames", &["txt", "txt.gz", "txt.gpg", "txt.gz.gpg"])
+            .add_filter("Usernames", &["txt", "gz", "gpg"])
             .pick_file()
         {
             let ext = path.extension().unwrap_or_default();
@@ -355,24 +355,15 @@ impl Default for App {
     }
 }
 
-impl epi::App for App {
-    fn name(&self) -> &str {
-        "Lichess User Search"
-    }
+impl App {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let app = if let Some(storage) = cc.storage {
+            eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
+        } else {
+            Self::default()
+        };
 
-    fn setup(
-        &mut self,
-        _ctx: &egui::Context,
-        frame: &epi::Frame,
-        storage: Option<&dyn epi::Storage>,
-    ) {
-        frame.set_window_title(Box::leak(
-            format!("Lichess User Search - {VERSION}").into_boxed_str(),
-        ));
-        if let Some(storage) = storage {
-            *self = epi::get_value(storage, epi::APP_KEY).unwrap_or_default();
-        }
-        let update = self.update.clone();
+        let update = app.update.clone();
         std::thread::spawn(move || {
             if let Err(error) = (|| -> anyhow::Result<()> {
                 let version = ureq::get(VERSION_URL).call()?.into_string()?;
@@ -381,17 +372,23 @@ impl epi::App for App {
                 }
                 Ok(())
             })() {
-                show_error(&format!("Failed to check for updates: {}", error));
+                show_error(&format!("Failed to check for updates: {error}"));
             }
         });
+
+        app
+    }
+}
+
+impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
-    fn save(&mut self, storage: &mut dyn epi::Storage) {
-        epi::set_value(storage, epi::APP_KEY, self);
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &epi::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         use State::*;
+
+        frame.set_window_title(&format!("Lichess User Search - {VERSION}"));
 
         egui::CentralPanel::default().show(ctx, |ui| match &mut self.state {
             AskPassword(path) => {
@@ -402,7 +399,7 @@ impl epi::App for App {
                     decrypt |= ui
                         .add(TextEdit::singleline(&mut self.password).password(true))
                         .lost_focus()
-                        && ui.input().key_pressed(Key::Enter);
+                        && ui.input(|i| i.key_pressed(Key::Enter));
                     decrypt |= ui.button("Decrypt").clicked();
                 });
                 if decrypt {
@@ -526,7 +523,7 @@ impl epi::App for App {
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Username: ");
                         do_search |= ui.text_edit_singleline(&mut s.pattern).lost_focus()
-                            && ui.input().key_pressed(Key::Enter);
+                            && ui.input(|i| i.key_pressed(Key::Enter));
                         do_search |= ui
                             .add_enabled(s.pattern.len() >= 3, Button::new("Search"))
                             .clicked();
@@ -541,14 +538,14 @@ impl epi::App for App {
                             ("borderline", &mut self.saved_borderline),
                         ] {
                             if coll.is_empty() {
-                                ui.label(format!("No {} names", name));
+                                ui.label(format!("No {name} names"));
                             } else {
                                 ui.label(format!("{} {} names", coll.len(), name));
                             }
                             if ui.button("Copy").clicked() {
                                 copy_to_clipboard(
                                     coll.iter()
-                                        .map(|n| format!("/{}", n))
+                                        .map(|n| format!("/{n}"))
                                         .collect::<Vec<_>>()
                                         .join("\n"),
                                 );
@@ -574,21 +571,20 @@ impl epi::App for App {
                             .add_enabled(close_enabled, Button::new("Close accounts"))
                             .on_hover_text(hint)
                             .on_disabled_hover_text(format!(
-                                "Closing more than {} accounts at once \
-                                 is not allowed for safety reasons",
-                                MAX_CLOSE
+                                "Closing more than {MAX_CLOSE} accounts at once \
+                                 is not allowed for safety reasons"
                             ));
                         let api_key_popup_id = ui.make_persistent_id("api_key_popup");
                         if close_btn.clicked() {
-                            ui.memory().toggle_popup(api_key_popup_id);
+                            ui.memory_mut(|m| m.toggle_popup(api_key_popup_id));
                         }
                         egui::popup::popup_below_widget(ui, api_key_popup_id, &close_btn, |ui| {
                             ui.set_min_width(200.0);
                             ui.label("Admin API key:");
                             let api_key_edit = ui.text_edit_singleline(&mut self.api_key);
                             api_key_edit.request_focus();
-                            do_close |=
-                                api_key_edit.lost_focus() && ui.input().key_pressed(Key::Enter);
+                            do_close |= api_key_edit.lost_focus()
+                                && ui.input(|i| i.key_pressed(Key::Enter));
                             do_close |= ui
                                 .add_enabled(
                                     !self.api_key.is_empty(),
@@ -738,7 +734,7 @@ impl epi::App for App {
                                 let obvious = self.saved_obvious.contains(&user.name);
                                 let borderline = self.saved_borderline.contains(&user.name);
                                 let (mut clicked_obv, mut clicked_border) = (false, false);
-                                ui.with_layout(Layout::right_to_left(), |ui| {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     clicked_obv = ui
                                         .button(if obvious { "–Obvious" } else { "+Obvious" })
                                         .clicked();
@@ -826,12 +822,12 @@ impl epi::App for App {
                     ui.horizontal(|ui| {
                         ui.label("Update available: ");
                         ui.hyperlink_to(new_version, RELEASE_URL);
-                        ui.label(format!(" (currently running {})", VERSION));
+                        ui.label(format!(" (currently running {VERSION})"));
                     });
                 }
 
                 // Handle scrolling (to move through pages)
-                match ctx.input().scroll_delta.y {
+                match ctx.input(|i| i.scroll_delta.y) {
                     y if y > 0.0 && s.page > 0 => s.page -= 1,
                     y if y < 0.0 && (s.page + 1) * self.page_size < results.len() => s.page += 1,
                     _ => (),
@@ -871,7 +867,7 @@ fn show_error(msg: &impl Display) {
     MessageDialog::new()
         .set_title("Error")
         .set_buttons(MessageButtons::Ok)
-        .set_description(&format!("Error: {}", msg))
+        .set_description(&format!("Error: {msg}"))
         .set_level(MessageLevel::Error)
         .show();
 }

@@ -67,8 +67,8 @@ pub fn fetch_users(names: &[String]) -> anyhow::Result<Vec<ApiUser>> {
 pub fn close_account(name: &str, api_key: &str) -> anyhow::Result<()> {
     ensure!(!api_key.is_empty(), "No API key");
 
-    let resp = ureq::post(&format!("https://lichess.org/mod/{}/close", name))
-        .set("Authorization", &format!("Bearer {}", api_key))
+    let resp = ureq::post(&format!("https://lichess.org/mod/{name}/close"))
+        .set("Authorization", &format!("Bearer {api_key}"))
         .call()?;
     ensure!(
         resp.status() == 200,
@@ -80,8 +80,8 @@ pub fn close_account(name: &str, api_key: &str) -> anyhow::Result<()> {
 
     std::thread::sleep(Duration::from_millis(100));
 
-    let resp = ureq::post(&format!("https://lichess.org/api/user/{}/note", name))
-        .set("Authorization", &format!("Bearer {}", api_key))
+    let resp = ureq::post(&format!("https://lichess.org/api/user/{name}/note"))
+        .set("Authorization", &format!("Bearer {api_key}"))
         .send_json(ureq::json!({
           "text": "Closed for username",
           "mod": true,
