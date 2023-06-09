@@ -11,10 +11,7 @@ use anyhow::{bail, ensure};
 use chrono::Utc;
 use copypasta::ClipboardProvider;
 use eframe::{
-    egui::{
-        self, vec2, Button, DragValue, Grid, Hyperlink, Key, Layout, ProgressBar, RichText,
-        TextEdit,
-    },
+    egui::{self, vec2, Button, DragValue, Grid, Key, Layout, ProgressBar, RichText, TextEdit},
     emath::Align,
     epaint::Color32,
 };
@@ -341,16 +338,16 @@ impl Default for App {
     fn default() -> Self {
         Self {
             page_size: DEFAULT_PAGE_SIZE,
-            password: Default::default(),
-            api_key: Default::default(),
-            levenshtein_settings: Default::default(),
-            search_mode: Default::default(),
+            password: String::default(),
+            api_key: String::default(),
+            levenshtein_settings: LevenshteinSettings::default(),
+            search_mode: SearchMode::default(),
             always_fetch_info: false,
             hide_closed: false,
-            saved_borderline: Default::default(),
-            saved_obvious: Default::default(),
+            saved_borderline: HashSet::default(),
+            saved_obvious: HashSet::default(),
             update: Default::default(),
-            state: Default::default(),
+            state: State::default(),
         }
     }
 }
@@ -543,12 +540,13 @@ impl eframe::App for App {
                                 ui.label(format!("{} {} names", coll.len(), name));
                             }
                             if ui.button("Copy").clicked() {
-                                copy_to_clipboard(
-                                    coll.iter()
+                                ui.output_mut(|o| {
+                                    o.copied_text = coll
+                                        .iter()
                                         .map(|n| format!("/{n}"))
                                         .collect::<Vec<_>>()
-                                        .join("\n"),
-                                );
+                                        .join("\n");
+                                });
                             }
                             if ui.button("Show").clicked() {
                                 *results = coll.iter().map(From::from).collect();
@@ -773,10 +771,7 @@ impl eframe::App for App {
                                 if !user.enabled {
                                     name = name.color(Color32::RED).strikethrough();
                                 }
-                                ui.add(Hyperlink::from_label_and_url(
-                                    name,
-                                    format!("https://lichess.org/@/{}", user.id),
-                                ));
+                                ui.hyperlink_to(name, format!("https://lichess.org/@/{}", user.id));
                                 ui.label(user.created_at.map(timeago).unwrap_or_default());
                                 ui.label(user.seen_at.map(timeago).unwrap_or_default());
                                 ui.label(user.games.to_string());
@@ -834,12 +829,6 @@ impl eframe::App for App {
                 }
             }
         });
-    }
-}
-
-fn copy_to_clipboard(s: String) {
-    if let Some(Err(error)) = clipboard().map(|mut ctx| ctx.set_contents(s)) {
-        show_error(&error);
     }
 }
 
